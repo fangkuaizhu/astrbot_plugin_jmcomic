@@ -1,0 +1,36 @@
+name: jmcomic
+display_name: 禁漫PDF下载
+version: 1.1.0
+description: 发送车号自动下载JMComic本子，合并为PDF直接发送，支持NapCat/AstrBot分离部署
+author: Hanako
+repo: https://github.com/fangkuaizhu/astrbot_plugin_jmcomic
+keywords:
+  - jmcomic
+  - 禁漫
+  - pdf
+  - 18comic
+  - astrbot
+  - napcat
+
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
+  - wecom
+
+astrbot_version: ">=4.17.0"
+
+config:
+  - name: client_impl
+    type: string
+    default: api
+    description: "客户端类型: api (移动端) 或 html (网页端)"
+  - name: max_pages
+    type: int
+    default: 300
+    description: "PDF最大页数限制"
+  - name: jm_temp_root
+    type: string
+    default: /AstrBot/data/jmcomic_temp
+    description: "临时文件根目录，与NapCat共享的路径"
+    advanced: true
