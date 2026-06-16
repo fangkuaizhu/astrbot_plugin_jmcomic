@@ -20,17 +20,4 @@ support_platforms:
 
 astrbot_version: ">=4.17.0"
 
-config:
-  - name: client_impl
-    type: string
-    default: api
-    description: "客户端类型: api (移动端) 或 html (网页端)"
-  - name: max_pages
-    type: int
-    default: 300
-    description: "PDF最大页数限制"
-  - name: jm_temp_root
-    type: string
-    default: /AstrBot/data/jmcomic_temp
-    description: "临时文件根目录，与NapCat共享的路径"
-    advanced: true
+config_schema: _conf_schema.json

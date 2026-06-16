@@ -7,7 +7,6 @@ import os
 import logging
 from typing import List
 import img2pdf
-from pypdf import PdfWriter, PdfReader
 
 logger = logging.getLogger(__name__)
 

@@ -6,9 +6,8 @@ JMComic AstrBot 插件
 import os
 import asyncio
 import logging
-import tempfile
 import shutil
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import List
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
@@ -20,7 +19,7 @@ from .pdf_maker import PDFMaker
 
 logger = logging.getLogger(__name__)
 
-# 临时文件根目录 - 使用AstrBot data目录（与OneBot共享）
+# 临时文件根目录（可通过 _conf_schema.json 中的 jm_temp_root 配置）
 JM_TEMP_ROOT = os.path.join('/AstrBot/data', 'jmcomic_temp')
 
 
@@ -34,6 +33,12 @@ class JMComicPlugin(Star):
         self.config = context.get_config() or {}
         self.client_impl = self.config.get('client_impl', 'api')
         self.max_pages = self.config.get('max_pages', 300)
+        
+        # 临时文件根目录（支持从配置读取，默认与 NapCat 共享路径 /AstrBot/data/jmcomic_temp）
+        self.jm_temp_root = self.config.get('jm_temp_root', None) or JM_TEMP_ROOT
+        if self.jm_temp_root != JM_TEMP_ROOT:
+            global JM_TEMP_ROOT
+            JM_TEMP_ROOT = self.jm_temp_root
         
         # 初始化组件
         self._client = None
@@ -63,12 +68,8 @@ class JMComicPlugin(Star):
             try:
                 # 计算距离明天5点的秒数
                 now = datetime.now()
-                tomorrow_5am = datetime.combine(now.date(), time(5, 0))
-                if now >= tomorrow_5am:
-                    # 如果已经过了今天5点，计算到明天5点
-                    tomorrow_5am = datetime.combine(
-                        now.date().replace(day=now.day + 1), time(5, 0)
-                    )
+                tomorrow = now.date() + timedelta(days=1)
+                tomorrow_5am = datetime.combine(tomorrow, time(5, 0))
                 
                 wait_seconds = (tomorrow_5am - now).total_seconds()
                 logger.info(f"Next cleanup at {tomorrow_5am}, waiting {wait_seconds:.0f}s")
@@ -184,7 +185,7 @@ class JMComicPlugin(Star):
                     logger.warning(f"PDF disappeared during send (check {check+1}): {pdf_path}")
                     yield event.plain_result("❌ 文件被删除，请重试")
                     return
-                await asyncio.sleep(0.1)  # 短暂等待
+                await asyncio.sleep(0.5)  # 短暂等待
             
             logger.info(f"Sending PDF: {pdf_path}")
             yield event.chain_result([
