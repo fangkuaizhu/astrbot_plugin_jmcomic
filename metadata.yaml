@@ -2,7 +2,7 @@ name: jmcomic
 display_name: 禁漫PDF下载
 version: 1.1.0
 description: 发送车号自动下载JMComic本子，合并为PDF直接发送，支持NapCat/AstrBot分离部署
-author: fangkuaizhu
+author: myczdfkz
 repo: https://github.com/fangkuaizhu/astrbot_plugin_jmcomic
 keywords:
   - jmcomic
