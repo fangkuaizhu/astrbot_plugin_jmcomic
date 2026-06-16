@@ -1,0 +1,21 @@
+{
+  "client_impl": {
+    "description": "客户端类型",
+    "type": "string",
+    "default": "api",
+    "hint": "api (移动端) 或 html (网页端)"
+  },
+  "max_pages": {
+    "description": "PDF最大页数限制",
+    "type": "int",
+    "default": 300,
+    "hint": "超出此页数的本子会被截断"
+  },
+  "jm_temp_root": {
+    "description": "临时文件根目录",
+    "type": "string",
+    "default": "/AstrBot/data/jmcomic_temp",
+    "hint": "与 NapCat 共享的路径，分离部署时需保持一致",
+    "advanced": true
+  }
+}
