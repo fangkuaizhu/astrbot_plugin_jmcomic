@@ -23,11 +23,7 @@
 
 ## 📦 安装
 
-### 方式一：AstrBot WebUI
-
-在 AstrBot WebUI 的插件市场中搜索 `jmcomic` 并安装。
-
-### 方式二：手动安装
+### 方式一：手动安装（推荐）
 
 1. 克隆仓库到 AstrBot 的 `data/plugins/` 目录：
 
@@ -39,14 +35,18 @@ git clone https://github.com/fangkuaizhu/astrbot_plugin_jmcomic.git
 2. 安装依赖：
 
 ```bash
-pip install jmcomic Pillow
+pip install -r astrbot_plugin_jmcomic/requirements.txt
 ```
 
 3. 重启 AstrBot 或在 WebUI 中重载插件。
 
-### 方式三：直接下载
+### 方式二：直接下载
 
-从 [Releases](https://github.com/fangkuaizhu/astrbot_plugin_jmcomic/releases) 下载最新版并解压到 `data/plugins/` 目录。
+下载[最新源码](https://github.com/fangkuaizhu/astrbot_plugin_jmcomic)并解压到 `data/plugins/` 目录，然后安装依赖。
+
+### 方式三：AstrBot WebUI（待上架）
+
+插件已提交官方市场审核，审核通过后可直接在 WebUI 中搜索安装。
 
 ## 🎮 使用方法
 
@@ -79,7 +79,7 @@ pip install jmcomic Pillow
 |--------|------|--------|------|
 | `client_impl` | string | `api` | 客户端类型：`api` (移动端) 或 `html` (网页端) |
 | `max_pages` | int | `300` | PDF最大页数限制，超出部分截断 |
-| `jm_temp_root` | string | `/AstrBot/data/jmcomic_temp` | 临时文件目录（高级选项，一般不需要改） |
+| `jm_temp_root` | string | `/AstrBot/data/jmcomic_temp` | 临时文件目录（高级，一般不动，可通过 AstrBot WebUI 修改） |
 
 ## 🔧 NapCat + AstrBot 分离部署配置
 
@@ -105,14 +105,15 @@ services:
 
 ```
 astrbot_plugin_jmcomic/
-├── __init__.py        # 插件入口
-├── main.py            # 核心逻辑 / 命令处理
-├── jm_client.py       # JMComic API 封装
-├── pdf_maker.py       # 图片转PDF模块
-├── metadata.yaml      # 插件元数据
-├── requirements.txt   # Python 依赖
-├── README.md          # 本文件
-├── LICENSE            # MIT 许可证
+├── __init__.py         # 插件入口
+├── _conf_schema.json   # AstrBot V4 配置模式
+├── main.py             # 核心逻辑 / 命令处理
+├── jm_client.py        # JMComic API 封装
+├── pdf_maker.py        # 图片转PDF模块
+├── metadata.yaml       # 插件元数据
+├── requirements.txt    # Python 依赖
+├── README.md           # 本文件
+├── LICENSE             # MIT 许可证
 └── .gitignore
 ```
 
@@ -120,6 +121,7 @@ astrbot_plugin_jmcomic/
 
 - `jmcomic>=2.7.0` — 禁漫天堂API客户端
 - `Pillow>=10.0.0` — 图片处理
+- `img2pdf>=0.5.0` — 图片转PDF
 
 ## 📝 注意事项
 
