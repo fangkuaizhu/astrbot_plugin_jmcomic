@@ -9,20 +9,15 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-try:
-    import jmcomic
-    JMCOMIC_AVAILABLE = True
-except ImportError:
-    JMCOMIC_AVAILABLE = False
-
 
 class JMApiClient:
     """JMComic 客户端"""
     
     def __init__(self, client_impl: str = 'api'):
-        if not JMCOMIC_AVAILABLE:
+        if not is_available():
             raise ImportError("jmcomic not installed")
         
+        import jmcomic
         self._option = jmcomic.JmOption.default()
         self._client = self._option.build_jm_client()
         logger.info(f"JMComic client initialized ({client_impl})")
@@ -120,6 +115,8 @@ class JMApiClient:
         raise ValueError(f"无法识别车号: {album_id}")
 
 
+import sys
+
 _client = None
 
 
@@ -131,4 +128,9 @@ def get_jm_client(client_impl: str = 'api') -> JMApiClient:
 
 
 def is_available() -> bool:
-    return JMCOMIC_AVAILABLE
+    """检查 jmcomic 库是否可用（每次调用实时检测，支持热安装后识别）"""
+    try:
+        import jmcomic
+        return True
+    except ImportError:
+        return False
