@@ -64,18 +64,21 @@ class JMApiClient:
         if not episodes:
             raise ValueError("No episodes found")
         
-        logger.info(f"Album: {album.title} ({len(episodes)} episode(s))")
+        import time as _time
+        _t0 = _time.time()
         
         image_paths = []
         global_idx = 0
         failed = 0
         
+        logger.info(f"Album: {album.title} | {len(episodes)} episode(s), starting download...")
+        
         for idx, episode in enumerate(episodes, 1):
-            photo_id = episode[0]  # (photo_id, index, title)
-            logger.info(f"Downloading episode {idx}/{len(episodes)} (photo_id={photo_id})")
+            photo_id = episode[0]
+            _te = _time.time()
             
-            # 获取章节详情
             photo = self._client.get_photo_detail(photo_id)
+            ep_img_count = 0
             
             for img_detail in photo:
                 try:
@@ -85,11 +88,16 @@ class JMApiClient:
                     
                     self._client.download_by_image_detail(img_detail, img_path)
                     image_paths.append(img_path)
+                    ep_img_count += 1
                 except Exception as e:
                     failed += 1
                     logger.warning(f"Failed to download image (episode {idx}, img {global_idx}): {e}")
+            
+            elapsed = _time.time() - _te
+            logger.info(f"  Episode {idx}/{len(episodes)}: {ep_img_count} images in {elapsed:.1f}s (photo_id={photo_id})")
         
-        logger.info(f"Downloaded {len(image_paths)} images from {len(episodes)} episode(s)")
+        total_time = _time.time() - _t0
+        logger.info(f"Download complete: {len(image_paths)} images from {len(episodes)} episode(s) in {total_time:.1f}s")
         if failed:
             logger.warning(f"{failed} image(s) failed, PDF will have gaps")
         

@@ -227,17 +227,20 @@ class JMComicPlugin(Star):
             
             try:
                 yield event.plain_result(f"📥 正在下载 [{album_id}]...")
+                logger.info(f"[JM] Start download album_id={album_id}")
                 
                 client = self._get_client()
                 loop = asyncio.get_event_loop()
                 
                 save_dir = os.path.join(tmpdir, 'images')
+                _t0 = __import__('time').time()
                 await loop.run_in_executor(
                     None,
                     client.download_album,
                     album_id,
                     save_dir
                 )
+                dl_time = __import__('time').time() - _t0
                 
                 images = self._collect_images(save_dir)
                 if not images:
@@ -245,8 +248,12 @@ class JMComicPlugin(Star):
                     return
                 
                 if len(images) > self.max_pages:
+                    logger.info(f"[JM] Album {album_id}: {len(images)} images, truncated to {self.max_pages}")
                     images = images[:self.max_pages]
+                else:
+                    logger.info(f"[JM] Album {album_id}: {len(images)} images collected in {dl_time:.1f}s")
                 
+                _t1 = __import__('time').time()
                 await loop.run_in_executor(
                     None,
                     PDFMaker.images_to_pdf,
@@ -254,17 +261,22 @@ class JMComicPlugin(Star):
                     pdf_path,
                     f"JM{album_id}"
                 )
+                pdf_time = __import__('time').time() - _t1
                 
                 if not os.path.exists(pdf_path):
                     yield event.plain_result("❌ 下载失败")
                     return
+                
+                pdf_size = os.path.getsize(pdf_path)
+                total_time = dl_time + pdf_time
+                logger.info(f"[JM] Done {album_id}: {len(images)}p -> {pdf_size//1024}KB PDF in {total_time:.1f}s (dl={dl_time:.1f}s+pdf={pdf_time:.1f}s)")
                 
                 yield event.chain_result([
                     Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
                 ])
                 
             except Exception as e:
-                logger.error(f"Download failed for {album_id}: {e}")
+                logger.error(f"[JM] Failed {album_id}: {e}")
                 yield event.plain_result(f"❌ 下载失败: {str(e)}")
     
     def _collect_images(self, directory: str) -> List[str]:
