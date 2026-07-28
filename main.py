@@ -159,17 +159,20 @@ class JMComicPlugin(Star):
         try:
             yield event.plain_result(f"🔍 搜索中: {keyword}...")
             
-            client = self._get_client()
-            
-            # 搜索本子（专用线程 + 20 秒超时）
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                fut = pool.submit(client.search, keyword, 1)
+            # 在新线程中创建客户端 + 执行搜索，整体 20 秒超时
+            import concurrent.futures, functools
+            def _search_work():
+                from .jm_client import get_jm_client
+                c = get_jm_client(self.client_impl)
+                return c.search(keyword, 1)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                _fut = _pool.submit(_search_work)
                 try:
-                    data = fut.result(timeout=20)
+                    data = _fut.result(timeout=20)
                 except concurrent.futures.TimeoutError:
                     logger.error(f"[JM] Search timeout for '{keyword}'")
                     yield event.plain_result(f"❌ 搜索超时: [{keyword}]，请稍后重试")
+                    _pool.shutdown(wait=False)
                     return
             
             results = data.get('results', [])
