@@ -71,6 +71,7 @@ class JMApiClient:
             raise ValueError("No episodes found")
         
         import time as _time
+        logger.debug(f"[JM] Album has {len(episodes)} episode(s), starting...")
         _t0 = _time.time()
         
         image_paths = []

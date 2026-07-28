@@ -160,13 +160,17 @@ class JMComicPlugin(Star):
             yield event.plain_result(f"🔍 搜索中: {keyword}...")
             
             client = self._get_client()
-            loop = asyncio.get_event_loop()
             
-            # 搜索本子（带 20 秒超时）
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, client.search, keyword, 1),
-                timeout=20
-            )
+            # 搜索本子（专用线程 + 20 秒超时）
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(client.search, keyword, 1)
+                try:
+                    data = fut.result(timeout=20)
+                except concurrent.futures.TimeoutError:
+                    logger.error(f"[JM] Search timeout for '{keyword}'")
+                    yield event.plain_result(f"❌ 搜索超时: [{keyword}]，请稍后重试")
+                    return
             
             results = data.get('results', [])
             total_pages = data.get('total_pages', 0)
