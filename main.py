@@ -11,7 +11,6 @@ from datetime import datetime, time, timedelta
 from typing import List
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
-from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
 from .jm_client import get_jm_client, is_available
@@ -175,24 +174,10 @@ class JMComicPlugin(Star):
         
         # 检查缓存：如果PDF已存在，直接发送
         if os.path.exists(pdf_path):
-            size = PDFMaker.format_size(os.path.getsize(pdf_path))
-            logger.info(f"Cache hit for {album_id}, size: {size}, path: {pdf_path}")
-            yield event.plain_result(f"📋 命中缓存 ({size})，发送中...")
-            
-            # 多次检查文件是否存在（防止并发删除）
-            for check in range(3):
-                if not os.path.exists(pdf_path):
-                    logger.warning(f"PDF disappeared during send (check {check+1}): {pdf_path}")
-                    yield event.plain_result("❌ 文件被删除，请重试")
-                    return
-                await asyncio.sleep(0.5)  # 短暂等待
-            
-            logger.info(f"Sending PDF: {pdf_path}")
+            logger.info(f"Cache hit for {album_id}, path: {pdf_path}")
             yield event.chain_result([
                 Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
             ])
-            logger.info(f"PDF sent successfully: {pdf_path}")
-            yield event.plain_result("📤 完成")
             return
         
         # 并发限制：同一时间只能处理一个下载
@@ -209,8 +194,6 @@ class JMComicPlugin(Star):
                 client = self._get_client()
                 loop = asyncio.get_event_loop()
                 
-                # 下载本子
-                yield event.plain_result("📚 下载中...")
                 save_dir = os.path.join(tmpdir, 'images')
                 await loop.run_in_executor(
                     None,
@@ -219,42 +202,29 @@ class JMComicPlugin(Star):
                     save_dir
                 )
                 
-                # 收集图片
                 images = self._collect_images(save_dir)
                 if not images:
                     yield event.plain_result("❌ 下载失败，没有获取到图片")
                     return
                 
-                # 限制页数
                 if len(images) > self.max_pages:
-                    yield event.plain_result(f"⚠️ 页数过多({len(images)})，只处理前{self.max_pages}页")
                     images = images[:self.max_pages]
                 
-                # 生成PDF
-                yield event.plain_result(f"📄 生成PDF中 ({len(images)}页)...")
-                
-                pdf_maker = PDFMaker()
                 await loop.run_in_executor(
                     None,
-                    pdf_maker.images_to_pdf,
+                    PDFMaker.images_to_pdf,
                     images,
                     pdf_path,
                     f"JM{album_id}"
                 )
                 
                 if not os.path.exists(pdf_path):
-                    yield event.plain_result("❌ PDF生成失败")
+                    yield event.plain_result("❌ 下载失败")
                     return
                 
-                size = pdf_maker.format_size(os.path.getsize(pdf_path))
-                yield event.plain_result(f"✅ 生成完成 ({size})，发送中...")
-                
-                # 使用File组件发送文件
                 yield event.chain_result([
                     Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
                 ])
-                
-                yield event.plain_result("📤 完成")
                 
             except Exception as e:
                 logger.error(f"Download failed for {album_id}: {e}")
