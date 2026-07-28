@@ -21,8 +21,8 @@
   "whitelist_enabled": {
     "description": "启用白名单模式",
     "type": "bool",
-    "default": true,
-    "hint": "启用后只允许白名单中的群组使用本插件"
+    "default": false,
+    "hint": "启用后只允许白名单中的群组使用本插件，默认关闭"
   },
   "group_whitelist": {
     "description": "群组白名单",
