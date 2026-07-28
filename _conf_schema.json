@@ -28,7 +28,7 @@
     "description": "群组白名单",
     "type": "list",
     "default": [],
-    "hint": "在此列表中的群组 ID 可以使用插件，为空则关闭白名单"
+    "hint": "在此列表中的群组 ID 可以使用插件，白名单为空时全部拒绝"
   },
   "group_blacklist": {
     "description": "群组黑名单",
