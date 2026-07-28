@@ -248,32 +248,26 @@ class JMComicPlugin(Star):
             yield event.plain_result("⏳ 有其他下载任务进行中，请稍后再试...")
             return
         
+        # 同一时间只能处理一个下载
+        if self._download_lock.locked():
+            yield event.plain_result("⏳ 有其他下载任务进行中，请稍后再试...")
+            return
+        
         async with self._download_lock:
             os.makedirs(tmpdir, exist_ok=True)
-            
             try:
-                yield event.plain_result(f"📥 正在下载 [{album_id}]...")
-                logger.info(f"[JM] Start download album_id={album_id}")
-                
-                # 重置打断信号
                 self._cancel_event.clear()
                 self._current_task_album_id = album_id
+                logger.info(f"[JM] Start download album_id={album_id}")
                 
                 client = self._get_client()
                 loop = asyncio.get_event_loop()
                 
                 save_dir = os.path.join(tmpdir, 'images')
                 _t0 = __import__('time').time()
-                await loop.run_in_executor(
-                    None,
-                    client.download_album,
-                    album_id,
-                    save_dir,
-                    self._cancel_event
-                )
+                await loop.run_in_executor(None, client.download_album, album_id, save_dir, self._cancel_event)
                 dl_time = __import__('time').time() - _t0
                 
-                # 检查是否被打断
                 if self._cancel_event.is_set():
                     shutil.rmtree(tmpdir, ignore_errors=True)
                     yield event.plain_result("🛑 下载已取消")
@@ -281,23 +275,15 @@ class JMComicPlugin(Star):
                 
                 images = self._collect_images(save_dir)
                 if not images:
-                    yield event.plain_result("❌ 下载失败，没有获取到图片")
+                    yield event.plain_result("❌ 下载失败")
                     return
                 
                 if len(images) > self.max_pages:
                     logger.info(f"[JM] Album {album_id}: {len(images)} images, truncated to {self.max_pages}")
                     images = images[:self.max_pages]
-                else:
-                    logger.info(f"[JM] Album {album_id}: {len(images)} images collected in {dl_time:.1f}s")
                 
                 _t1 = __import__('time').time()
-                await loop.run_in_executor(
-                    None,
-                    PDFMaker.images_to_pdf,
-                    images,
-                    pdf_path,
-                    f"JM{album_id}"
-                )
+                await loop.run_in_executor(None, PDFMaker.images_to_pdf, images, pdf_path)
                 pdf_time = __import__('time').time() - _t1
                 
                 if not os.path.exists(pdf_path):
@@ -311,10 +297,8 @@ class JMComicPlugin(Star):
                 yield event.chain_result([
                     Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
                 ])
-                
             except Exception as e:
                 if self._cancel_event.is_set():
-                    shutil.rmtree(tmpdir, ignore_errors=True)
                     yield event.plain_result("🛑 下载已取消")
                 else:
                     logger.error(f"[JM] Failed {album_id}: {e}")
