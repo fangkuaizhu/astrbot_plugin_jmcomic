@@ -18,9 +18,15 @@ class JMApiClient:
             raise ImportError("jmcomic not installed")
         
         import jmcomic
+        # 使用自定义 option 减少重试和超时
         self._option = jmcomic.JmOption.default()
+        self._option.client.retry_times = 1
+        # 通过 postman meta_data 传递 curl_cffi 超时参数
+        meta = self._option.client.postman.get('meta_data', {})
+        meta.setdefault('timeout', 10)
+        self._option.client.postman.meta_data = meta
         self._client = self._option.build_jm_client()
-        logger.info(f"JMComic client initialized ({client_impl})")
+        logger.info(f"JMComic client initialized (impl={client_impl}, retry={self._option.client.retry_times})")
     
     def search(self, keyword: str, page: int = 1) -> dict:
         """
