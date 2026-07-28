@@ -45,7 +45,7 @@ class JMApiClient:
             'current_page': page,
         }
     
-    def download_album(self, album_id: str, save_dir: str) -> List[str]:
+    def download_album(self, album_id: str, save_dir: str, cancel_event=None) -> List[str]:
         """
         下载本子所有章节到指定目录
         
@@ -74,6 +74,10 @@ class JMApiClient:
         logger.info(f"Album: {album.title} | {len(episodes)} episode(s), starting download...")
         
         for idx, episode in enumerate(episodes, 1):
+            if cancel_event and cancel_event.is_set():
+                logger.info(f"Download cancelled at episode {idx} (album_id={album_id})")
+                break
+            
             photo_id = episode[0]
             _te = _time.time()
             
@@ -81,6 +85,9 @@ class JMApiClient:
             ep_img_count = 0
             
             for img_detail in photo:
+                if cancel_event and cancel_event.is_set():
+                    logger.info(f"Download cancelled mid-episode {idx}")
+                    break
                 try:
                     global_idx += 1
                     ext = os.path.splitext(img_detail.img_url)[1] if hasattr(img_detail, 'img_url') else '.webp'

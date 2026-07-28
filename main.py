@@ -7,6 +7,7 @@ import os
 import asyncio
 import logging
 import shutil
+import threading
 from datetime import datetime, time, timedelta
 from typing import List, Optional
 from astrbot.api.event import filter, AstrMessageEvent
@@ -53,6 +54,10 @@ class JMComicPlugin(Star):
         
         # 并发控制锁
         self._download_lock = asyncio.Lock()
+        
+        # 打断控制（使用 threading.Event 以跨线程池边界生效）
+        self._cancel_event = threading.Event()
+        self._current_task_album_id = None
         
         # 启动定时清理任务
         self._cleanup_task = asyncio.create_task(self._scheduled_cleanup())
@@ -188,6 +193,23 @@ class JMComicPlugin(Star):
             logger.error(f"Search failed: {e}")
             yield event.plain_result(f"❌ 搜索失败: {str(e)}")
     
+    @filter.command("jmstop")
+    async def jm_stop(self, event: AstrMessageEvent):
+        """
+        打断当前下载任务
+        用法: /jmstop
+        """
+        event.stop_event()
+        
+        if not self._download_lock.locked():
+            yield event.plain_result("📭 当前没有进行中的下载任务")
+            return
+        
+        album_id = self._current_task_album_id
+        self._cancel_event.set()
+        logger.info(f"Cancel requested for album: {album_id}")
+        yield event.plain_result(f"🛑 已发送打断信号，正在停止下载 [{album_id or '未知'}]...")
+    
     @filter.command("jm")
     async def jm_command(self, event: AstrMessageEvent, album_id: Optional[str] = None):
         """
@@ -233,6 +255,10 @@ class JMComicPlugin(Star):
                 yield event.plain_result(f"📥 正在下载 [{album_id}]...")
                 logger.info(f"[JM] Start download album_id={album_id}")
                 
+                # 重置打断信号
+                self._cancel_event.clear()
+                self._current_task_album_id = album_id
+                
                 client = self._get_client()
                 loop = asyncio.get_event_loop()
                 
@@ -242,9 +268,16 @@ class JMComicPlugin(Star):
                     None,
                     client.download_album,
                     album_id,
-                    save_dir
+                    save_dir,
+                    self._cancel_event
                 )
                 dl_time = __import__('time').time() - _t0
+                
+                # 检查是否被打断
+                if self._cancel_event.is_set():
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                    yield event.plain_result("🛑 下载已取消")
+                    return
                 
                 images = self._collect_images(save_dir)
                 if not images:
@@ -280,8 +313,14 @@ class JMComicPlugin(Star):
                 ])
                 
             except Exception as e:
-                logger.error(f"[JM] Failed {album_id}: {e}")
-                yield event.plain_result(f"❌ 下载失败: {str(e)}")
+                if self._cancel_event.is_set():
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                    yield event.plain_result("🛑 下载已取消")
+                else:
+                    logger.error(f"[JM] Failed {album_id}: {e}")
+                    yield event.plain_result(f"❌ 下载失败: {str(e)}")
+            finally:
+                self._current_task_album_id = None
     
     def _collect_images(self, directory: str) -> List[str]:
         """收集目录中的图片文件"""
