@@ -8,7 +8,7 @@ import asyncio
 import logging
 import shutil
 from datetime import datetime, time, timedelta
-from typing import List
+from typing import List, Optional
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
 import astrbot.api.message_components as Comp
@@ -75,9 +75,10 @@ class JMComicPlugin(Star):
                 
                 await asyncio.sleep(wait_seconds)
                 
-                # 执行清理
+                # 执行清理（与下载互斥，确保不删正在写入的文件）
                 logger.info("Scheduled cleanup starting...")
-                self._cleanup_old_files()
+                async with self._download_lock:
+                    self._cleanup_old_files()
                 logger.info("Scheduled cleanup completed")
                 
             except asyncio.CancelledError:
@@ -109,7 +110,7 @@ class JMComicPlugin(Star):
             logger.error(f"Cleanup failed: {e}")
     
     @filter.command("jm搜索")
-    async def jm_search(self, event: AstrMessageEvent, keyword: str = None):
+    async def jm_search(self, event: AstrMessageEvent, keyword: Optional[str] = None):
         """
         搜索本子
         用法: /jm搜索 <关键词>
@@ -117,6 +118,10 @@ class JMComicPlugin(Star):
         """
         if not keyword:
             yield event.plain_result("❌ 请提供搜索关键词\n示例: /jm搜索 原神")
+            return
+        
+        if not is_available():
+            yield event.plain_result("❌ jmcomic 库未安装")
             return
         
         try:
@@ -130,8 +135,7 @@ class JMComicPlugin(Star):
                 None,
                 client.search,
                 keyword,
-                1,
-                10
+                1
             )
             
             results = data.get('results', [])
@@ -158,7 +162,7 @@ class JMComicPlugin(Star):
             yield event.plain_result(f"❌ 搜索失败: {str(e)}")
     
     @filter.command("jm")
-    async def jm_command(self, event: AstrMessageEvent, album_id: str = None):
+    async def jm_command(self, event: AstrMessageEvent, album_id: Optional[str] = None):
         """
         下载本子PDF
         用法: /jm <车号>
@@ -166,6 +170,10 @@ class JMComicPlugin(Star):
         """
         if not album_id:
             yield event.plain_result("❌ 请提供车号\n示例: /jm 350234")
+            return
+        
+        if not is_available():
+            yield event.plain_result("❌ jmcomic 库未安装")
             return
         
         # 使用固定的临时目录
