@@ -137,6 +137,8 @@ class JMComicPlugin(Star):
         用法: /jm搜索 <关键词>
         示例: /jm搜索 原神
         """
+        event.stop_event()
+        
         if not keyword:
             yield event.plain_result("❌ 请提供搜索关键词\n示例: /jm搜索 原神")
             return
@@ -193,6 +195,8 @@ class JMComicPlugin(Star):
         用法: /jm <车号>
         示例: /jm 350234
         """
+        event.stop_event()
+        
         if not album_id:
             yield event.plain_result("❌ 请提供车号\n示例: /jm 350234")
             return
