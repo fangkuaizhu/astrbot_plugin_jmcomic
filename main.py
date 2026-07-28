@@ -157,10 +157,8 @@ class JMComicPlugin(Star):
             return
         
         try:
-            yield event.plain_result(f"🔍 搜索中: {keyword}...")
-            
-            # 在新线程中创建客户端 + 执行搜索，整体 20 秒超时
-            import concurrent.futures, functools
+            # 搜索全过程（单次 yield，避免 stoprushingiamtyping 多次 yield 时卡住）
+            import concurrent.futures
             def _search_work():
                 from .jm_client import get_jm_client
                 c = get_jm_client(self.client_impl)
@@ -170,9 +168,8 @@ class JMComicPlugin(Star):
                 try:
                     data = _fut.result(timeout=20)
                 except concurrent.futures.TimeoutError:
-                    logger.error(f"[JM] Search timeout for '{keyword}'")
-                    yield event.plain_result(f"❌ 搜索超时: [{keyword}]，请稍后重试")
                     _pool.shutdown(wait=False)
+                    yield event.plain_result(f"❌ 搜索超时: [{keyword}]，请稍后重试")
                     return
             
             results = data.get('results', [])
@@ -182,20 +179,18 @@ class JMComicPlugin(Star):
                 yield event.plain_result(f"❌ 没有找到关于 [{keyword}] 的结果")
                 return
             
-            # 构建结果消息
             msg_parts = [f"🔍 搜索结果: {keyword}\n"]
-            
             for i, item in enumerate(results, 1):
                 msg_parts.append(f"{i}. 📖 {item['title']}")
                 msg_parts.append(f"   🆔 {item['id']}")
-            
-            msg_parts.append(f"\n📄 共 {total_pages} 页")
+            if total_pages > 1:
+                msg_parts.append(f"\n📄 共 {total_pages} 页")
             msg_parts.append(f"💡 使用 /jm <车号> 下载")
             
             yield event.plain_result('\n'.join(msg_parts))
             
         except Exception as e:
-            logger.error(f"Search failed: {e}")
+            logger.error(f"[JM] Search failed: {e}")
             yield event.plain_result(f"❌ 搜索失败: {str(e)}")
     
     @filter.command("jmstop")
