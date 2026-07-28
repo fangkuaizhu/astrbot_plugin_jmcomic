@@ -33,11 +33,8 @@ class JMComicPlugin(Star):
         self.client_impl = self.config.get('client_impl', 'api')
         self.max_pages = self.config.get('max_pages', 300)
         
-        # 临时文件根目录（支持从配置读取，默认与 NapCat 共享路径 /AstrBot/data/jmcomic_temp）
+        # 临时文件根目录（默认与 NapCat 共享路径 /AstrBot/data/jmcomic_temp）
         self.jm_temp_root = self.config.get('jm_temp_root', None) or JM_TEMP_ROOT
-        if self.jm_temp_root != JM_TEMP_ROOT:
-            global JM_TEMP_ROOT
-            JM_TEMP_ROOT = self.jm_temp_root
         
         # 白名单/黑名单配置
         self.whitelist_enabled = self.config.get('whitelist_enabled', True)
@@ -52,7 +49,7 @@ class JMComicPlugin(Star):
             logger.error("jmcomic not installed! Run: pip install jmcomic")
         
         # 确保临时目录存在
-        os.makedirs(JM_TEMP_ROOT, exist_ok=True)
+        os.makedirs(self.jm_temp_root, exist_ok=True)
         
         # 并发控制锁
         self._download_lock = asyncio.Lock()
@@ -114,11 +111,11 @@ class JMComicPlugin(Star):
     def _cleanup_old_files(self):
         """清理临时目录中的所有文件"""
         try:
-            if os.path.exists(JM_TEMP_ROOT):
-                logger.info(f"Starting cleanup of {JM_TEMP_ROOT}")
+            if os.path.exists(self.jm_temp_root):
+                logger.info(f"Starting cleanup of {self.jm_temp_root}")
                 # 删除目录下所有内容
-                for item in os.listdir(JM_TEMP_ROOT):
-                    item_path = os.path.join(JM_TEMP_ROOT, item)
+                for item in os.listdir(self.jm_temp_root):
+                    item_path = os.path.join(self.jm_temp_root, item)
                     try:
                         if os.path.isdir(item_path):
                             shutil.rmtree(item_path, ignore_errors=True)
@@ -129,7 +126,7 @@ class JMComicPlugin(Star):
                     except Exception as e:
                         logger.warning(f"Failed to remove {item_path}: {e}")
                 
-                logger.info(f"Cleanup completed in {JM_TEMP_ROOT}")
+                logger.info(f"Cleanup completed in {self.jm_temp_root}")
         except Exception as e:
             logger.error(f"Cleanup failed: {e}")
     
@@ -209,7 +206,7 @@ class JMComicPlugin(Star):
             return
         
         # 使用固定的临时目录
-        tmpdir = os.path.join(JM_TEMP_ROOT, str(album_id))
+        tmpdir = os.path.join(self.jm_temp_root, str(album_id))
         pdf_path = os.path.join(tmpdir, f'JM{album_id}.pdf')
         
         # 检查缓存：如果PDF已存在，直接发送
