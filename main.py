@@ -37,7 +37,7 @@ class JMComicPlugin(Star):
         self.jm_temp_root = self.config.get('jm_temp_root', None) or JM_TEMP_ROOT
         
         # 白名单/黑名单配置
-        self.whitelist_enabled = self.config.get('whitelist_enabled', True)
+        self.whitelist_enabled = self.config.get('whitelist_enabled', False)
         self.group_whitelist = self.config.get('group_whitelist', [])
         self.group_blacklist = self.config.get('group_blacklist', [])
         logger.info(f"Group access: enabled={self.whitelist_enabled}, whitelist={self.group_whitelist}, blacklist={self.group_blacklist}")
