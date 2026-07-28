@@ -262,15 +262,12 @@ class JMComicPlugin(Star):
                 
                 save_dir = os.path.join(tmpdir, 'images')
                 _t0 = __import__('time').time()
-                await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        client.download_album,
-                        album_id,
-                        save_dir,
-                        self._cancel_event
-                    ),
-                    timeout=300
+                await loop.run_in_executor(
+                    None,
+                    client.download_album,
+                    album_id,
+                    save_dir,
+                    self._cancel_event
                 )
                 dl_time = __import__('time').time() - _t0
                 
@@ -292,15 +289,12 @@ class JMComicPlugin(Star):
                     logger.info(f"[JM] Album {album_id}: {len(images)} images collected in {dl_time:.1f}s")
                 
                 _t1 = __import__('time').time()
-                await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        PDFMaker.images_to_pdf,
-                        images,
-                        pdf_path,
-                        f"JM{album_id}"
-                    ),
-                    timeout=120
+                await loop.run_in_executor(
+                    None,
+                    PDFMaker.images_to_pdf,
+                    images,
+                    pdf_path,
+                    f"JM{album_id}"
                 )
                 pdf_time = __import__('time').time() - _t1
                 

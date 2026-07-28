@@ -99,7 +99,9 @@ class JMApiClient:
                     ext = os.path.splitext(img_detail.img_url)[1] if hasattr(img_detail, 'img_url') else '.webp'
                     img_path = os.path.join(save_dir, f'{global_idx:05d}{ext}')
                     
+                    logger.debug(f"[JM] Fetching img {global_idx}: {os.path.basename(img_detail.img_url)}")
                     self._client.download_by_image_detail(img_detail, img_path)
+                    logger.debug(f"[JM] Saved img {global_idx}: {img_path}")
                     image_paths.append(img_path)
                     ep_img_count += 1
                 except Exception as e:
