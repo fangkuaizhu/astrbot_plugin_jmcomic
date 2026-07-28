@@ -39,6 +39,12 @@ class JMComicPlugin(Star):
             global JM_TEMP_ROOT
             JM_TEMP_ROOT = self.jm_temp_root
         
+        # 白名单/黑名单配置
+        self.whitelist_enabled = self.config.get('whitelist_enabled', True)
+        self.group_whitelist = self.config.get('group_whitelist', [])
+        self.group_blacklist = self.config.get('group_blacklist', [])
+        logger.info(f"Group access: enabled={self.whitelist_enabled}, whitelist={self.group_whitelist}, blacklist={self.group_blacklist}")
+        
         # 初始化组件
         self._client = None
         
@@ -55,6 +61,24 @@ class JMComicPlugin(Star):
         self._cleanup_task = asyncio.create_task(self._scheduled_cleanup())
         
         logger.info("JMComic plugin initialized")
+    
+    def _is_group_allowed(self, event: AstrMessageEvent) -> bool:
+        """检查当前群组是否允许使用插件（私聊默认放行）"""
+        group_id = getattr(event.message_obj, 'group_id', None)
+        if group_id is None:
+            return True  # 私聊默认放行
+        
+        group_id = str(group_id)
+        
+        # 黑名单优先：在黑名单中则拒绝
+        if group_id in self.group_blacklist:
+            return False
+        
+        # 白名单模式：不在白名单中则拒绝（白名单为空时全部拒绝）
+        if self.whitelist_enabled:
+            return group_id in self.group_whitelist
+        
+        return True
     
     def _get_client(self):
         if self._client is None:
@@ -124,6 +148,10 @@ class JMComicPlugin(Star):
             yield event.plain_result("❌ jmcomic 库未安装")
             return
         
+        if not self._is_group_allowed(event):
+            yield event.plain_result("❌ 本群组未授权使用此插件")
+            return
+        
         try:
             yield event.plain_result(f"🔍 搜索中: {keyword}...")
             
@@ -174,6 +202,10 @@ class JMComicPlugin(Star):
         
         if not is_available():
             yield event.plain_result("❌ jmcomic 库未安装")
+            return
+        
+        if not self._is_group_allowed(event):
+            yield event.plain_result("❌ 本群组未授权使用此插件")
             return
         
         # 使用固定的临时目录
