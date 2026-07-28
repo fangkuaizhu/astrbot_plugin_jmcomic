@@ -31,7 +31,7 @@ class JMComicPlugin(Star):
         
         # 配置
         self.config = context.get_config() or {}
-        self.client_impl = self.config.get('client_impl', 'html')
+        self.client_impl = self.config.get('client_impl', 'api')
         self.max_pages = self.config.get('max_pages', 300)
         
         # 临时文件根目录（默认与 NapCat 共享路径 /AstrBot/data/jmcomic_temp）

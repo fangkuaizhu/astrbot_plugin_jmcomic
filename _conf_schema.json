@@ -2,8 +2,8 @@
   "client_impl": {
     "description": "客户端类型",
     "type": "string",
-    "default": "html",
-    "hint": "api (移动端不限ip) 或 html (网页端限制地区但效率高)"
+    "default": "api",
+    "hint": "api (移动端) 或 html (网页端)"
   },
   "max_pages": {
     "description": "PDF最大页数限制",
