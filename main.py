@@ -13,6 +13,7 @@ from typing import List, Optional
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
 import astrbot.api.message_components as Comp
+from astrbot.api import logger as astrbot_logger
 
 from .jm_client import get_jm_client, is_available
 from .pdf_maker import PDFMaker
@@ -238,7 +239,7 @@ class JMComicPlugin(Star):
         
         # 检查缓存：如果PDF已存在，直接发送
         if os.path.exists(pdf_path):
-            logger.info(f"Cache hit for {album_id}, path: {pdf_path}")
+            astrbot_logger.info(f"Cache hit for {album_id}, path: {pdf_path}")
             yield event.chain_result([
                 Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
             ])
@@ -262,15 +263,15 @@ class JMComicPlugin(Star):
             c = _get_jm(self.client_impl)
             c.download_album(album_id, save_dir, self._cancel_event)
             imgs = self._collect_images(save_dir)
-            logger.info(f"[JM] dl_work: collected {len(imgs)} images, cancel={self._cancel_event.is_set()}")
+            astrbot_logger.info(f"[JM] dl_work: collected {len(imgs)} images, cancel={self._cancel_event.is_set()}")
             if not imgs or self._cancel_event.is_set():
                 return None
             if len(imgs) > self.max_pages:
-                logger.info(f"[JM] dl_work: truncated {len(imgs)} -> {self.max_pages}")
+                astrbot_logger.info(f"[JM] dl_work: truncated {len(imgs)} -> {self.max_pages}")
                 imgs = imgs[:self.max_pages]
             PDFMaker.images_to_pdf(imgs, pdf_path)
             pdf_sz = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
-            logger.info(f"[JM] dl_work: PDF {pdf_sz} bytes for {len(imgs)} images")
+            astrbot_logger.info(f"[JM] dl_work: PDF {pdf_sz} bytes for {len(imgs)} images")
             return imgs
         
         async with self._download_lock:
@@ -278,7 +279,7 @@ class JMComicPlugin(Star):
             save_dir = os.path.join(tmpdir, 'images')
             self._cancel_event.clear()
             self._current_task_album_id = album_id
-            logger.info(f"[JM] Start download album_id={album_id}")
+            astrbot_logger.info(f"[JM] Start download album_id={album_id}")
             
             _t0 = __import__('time').time()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
@@ -303,14 +304,13 @@ class JMComicPlugin(Star):
                 return
             
             pdf_size = os.path.getsize(pdf_path)
-            logger.info(f"[JM] Done {album_id}: {len(images)}p -> {pdf_size//1024}KB PDF")
+            astrbot_logger.info(f"[JM] Done {album_id}: {len(images)}p -> {pdf_size//1024}KB PDF")
             
-            # 验证文件可读（防止 NapCat 读不到）
             try:
                 with open(pdf_path, 'rb') as _f:
                     _f.read(10)
             except Exception as _e:
-                logger.error(f"[JM] PDF not readable: {_e}")
+                astrbot_logger.error(f"[JM] PDF not readable: {_e}")
                 yield event.plain_result("❌ 下载失败（文件不可读）")
                 return
             
