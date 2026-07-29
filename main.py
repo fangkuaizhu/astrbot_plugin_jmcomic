@@ -169,16 +169,13 @@ class JMComicPlugin(Star):
                 return
             astrbot_logger.info(f"[JM] Cache invalid for {album_id}, re-downloading...")
         
-        # 并发限制 + 占锁 + 发提示
+        # 并发限制
         if self._download_lock.locked():
             yield event.plain_result("⏳ 有其他下载任务进行中，请稍后再试...")
             return
         
-        async with self._download_lock:
-            yield event.plain_result(f"📥 正在下载 [{album_id}]...")
-        
-        # 后台下载（锁在 _background_dl 内再次获取，间隙极小）
-        async def _background_dl():
+        # 定义后台下载任务（必须在 yield 之前 create_task）
+        async def _bg():
             try:
                 async with self._download_lock:
                     os.makedirs(tmpdir, exist_ok=True)
@@ -188,7 +185,7 @@ class JMComicPlugin(Star):
                     astrbot_logger.info(f"[JM] Start download album_id={album_id}")
                     
                     import concurrent.futures
-                    def _dl_work():
+                    def _work():
                         c = get_jm_client(self.client_impl)
                         c.download_album(album_id, save_dir, self._cancel_event)
                         imgs = self._collect_images(save_dir)
@@ -204,38 +201,40 @@ class JMComicPlugin(Star):
                     
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        images = await asyncio.get_event_loop().run_in_executor(pool, _dl_work)
+                        imgs = await asyncio.get_event_loop().run_in_executor(pool, _work)
                     finally:
                         pool.shutdown(wait=False)
                     
-                    if images is None:
-                        msg = "🛑 下载已取消" if self._cancel_event.is_set() else "❌ 下载失败"
-                        try:
-                            await self.context.send_message(event.unified_msg_origin, msg)
-                        except Exception as _e2:
-                            astrbot_logger.error(f"[JM] send_msg failed: {_e2}")
+                    if imgs is None:
+                        m = "🛑 下载已取消" if self._cancel_event.is_set() else "❌ 下载失败"
+                        await self._send_msg(event, m)
                         return
-                    
                     if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
-                        try:
-                            await self.context.send_message(event.unified_msg_origin, "❌ 下载失败（PDF 为空）")
-                        except Exception as _e2:
-                            astrbot_logger.error(f"[JM] send_msg failed: {_e2}")
+                        await self._send_msg(event, "❌ 下载失败（PDF 为空）")
                         return
-                    
                     astrbot_logger.info(f"[JM] Done {album_id}: {os.path.getsize(pdf_path)//1024}KB PDF")
-                    try:
-                        from astrbot.api.message_components import MessageChain
-                        await self.context.send_message(
-                            event.unified_msg_origin,
-                            MessageChain([Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")])
-                        )
-                    except Exception as e:
-                        astrbot_logger.error(f"[JM] Send failed: {e}")
+                    await self._send_file(event, pdf_path, f"JM{album_id}.pdf")
             except Exception as e:
                 astrbot_logger.error(f"[JM] Background crash: {e}", exc_info=True)
         
-        asyncio.create_task(_background_dl())
+        asyncio.create_task(_bg())
+        yield event.plain_result(f"📥 正在下载 [{album_id}]...")
+    
+    async def _send_msg(self, event: AstrMessageEvent, text: str):
+        try:
+            await self.context.send_message(event.unified_msg_origin, text)
+        except Exception as e:
+            astrbot_logger.error(f"[JM] send_msg failed: {e}")
+    
+    async def _send_file(self, event: AstrMessageEvent, path: str, name: str):
+        try:
+            from astrbot.api.message_components import MessageChain
+            await self.context.send_message(
+                event.unified_msg_origin,
+                MessageChain([Comp.File(file=path, name=name)])
+            )
+        except Exception as e:
+            astrbot_logger.error(f"[JM] send_file failed: {e}")
     
     def _verify_pdf(self, pdf_path: str, expected_pages: int = 0) -> bool:
         try:
