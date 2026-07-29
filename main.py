@@ -262,11 +262,15 @@ class JMComicPlugin(Star):
             c = _get_jm(self.client_impl)
             c.download_album(album_id, save_dir, self._cancel_event)
             imgs = self._collect_images(save_dir)
+            logger.info(f"[JM] dl_work: collected {len(imgs)} images, cancel={self._cancel_event.is_set()}")
             if not imgs or self._cancel_event.is_set():
                 return None
             if len(imgs) > self.max_pages:
+                logger.info(f"[JM] dl_work: truncated {len(imgs)} -> {self.max_pages}")
                 imgs = imgs[:self.max_pages]
             PDFMaker.images_to_pdf(imgs, pdf_path)
+            pdf_sz = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
+            logger.info(f"[JM] dl_work: PDF {pdf_sz} bytes for {len(imgs)} images")
             return imgs
         
         async with self._download_lock:
@@ -294,12 +298,22 @@ class JMComicPlugin(Star):
                     yield event.plain_result("❌ 下载失败")
                 return
             
-            if not os.path.exists(pdf_path):
-                yield event.plain_result("❌ 下载失败")
+            if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+                yield event.plain_result("❌ 下载失败（PDF 为空）")
                 return
             
             pdf_size = os.path.getsize(pdf_path)
             logger.info(f"[JM] Done {album_id}: {len(images)}p -> {pdf_size//1024}KB PDF")
+            
+            # 验证文件可读（防止 NapCat 读不到）
+            try:
+                with open(pdf_path, 'rb') as _f:
+                    _f.read(10)
+            except Exception as _e:
+                logger.error(f"[JM] PDF not readable: {_e}")
+                yield event.plain_result("❌ 下载失败（文件不可读）")
+                return
+            
             yield event.chain_result([
                 Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
             ])
