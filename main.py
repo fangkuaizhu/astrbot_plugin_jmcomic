@@ -237,13 +237,14 @@ class JMComicPlugin(Star):
         tmpdir = os.path.join(self.jm_temp_root, str(album_id))
         pdf_path = os.path.join(tmpdir, f'JM{album_id}.pdf')
         
-        # 检查缓存：如果PDF已存在，直接发送
+        # 检查缓存：如果PDF存在且完整，直接发送
         if os.path.exists(pdf_path):
-            astrbot_logger.info(f"Cache hit for {album_id}, path: {pdf_path}")
-            yield event.chain_result([
-                Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
-            ])
-            return
+            if self._verify_pdf(pdf_path):
+                yield event.chain_result([
+                    Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
+                ])
+                return
+            astrbot_logger.info(f"[JM] Cache invalid for {album_id}, re-downloading...")
         
         # 并发限制：同一时间只能处理一个下载
         if self._download_lock.locked():
@@ -299,24 +300,36 @@ class JMComicPlugin(Star):
                     yield event.plain_result("❌ 下载失败")
                 return
             
-            if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
-                yield event.plain_result("❌ 下载失败（PDF 为空）")
-                return
-            
-            pdf_size = os.path.getsize(pdf_path)
-            astrbot_logger.info(f"[JM] Done {album_id}: {len(images)}p -> {pdf_size//1024}KB PDF")
-            
-            try:
-                with open(pdf_path, 'rb') as _f:
-                    _f.read(10)
-            except Exception as _e:
-                astrbot_logger.error(f"[JM] PDF not readable: {_e}")
-                yield event.plain_result("❌ 下载失败（文件不可读）")
+            if not self._verify_pdf(pdf_path, len(images)):
+                yield event.plain_result("❌ 下载失败（PDF校验不通过）")
                 return
             
             yield event.chain_result([
                 Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
             ])
+    
+    def _verify_pdf(self, pdf_path: str, expected_pages: int = 0) -> bool:
+        """验证PDF完整性，返回是否有效。expected_pages=0时只检查非空"""
+        try:
+            if not os.path.exists(pdf_path):
+                return False
+            size = os.path.getsize(pdf_path)
+            if size == 0:
+                astrbot_logger.warning(f"[JM] PDF empty (0 bytes): {pdf_path}")
+                os.remove(pdf_path)
+                return False
+            with open(pdf_path, 'rb') as f:
+                raw = f.read()
+            actual_pages = raw.count(b'/Type /Page') - raw.count(b'/Type /Pages')
+            if expected_pages > 0 and actual_pages != expected_pages:
+                astrbot_logger.warning(f"[JM] PDF page mismatch: expected {expected_pages}, got {actual_pages}")
+                os.remove(pdf_path)
+                return False
+            astrbot_logger.info(f"[JM] PDF OK: {actual_pages} pages, {size//1024}KB")
+            return True
+        except Exception as e:
+            astrbot_logger.error(f"[JM] PDF verify error: {e}")
+            return False
     
     def _collect_images(self, directory: str) -> List[str]:
         """收集目录中的图片文件"""
@@ -340,4 +353,4 @@ class JMComicPlugin(Star):
         """插件卸载时取消清理任务"""
         if self._cleanup_task:
             self._cleanup_task.cancel()
-        logger.info("JMComic plugin terminated")
+        astrbot_logger.info("JMComic plugin terminated")
