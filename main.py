@@ -197,8 +197,9 @@ class JMComicPlugin(Star):
             yield event.plain_result("⏳ 有其他下载任务进行中，请稍后再试...")
             return
         
-        # 发送"正在下载"提示，然后后台执行下载
-        yield event.plain_result(f"📥 正在下载 [{album_id}]...")
+        # 提前占锁，防止间隙期第二个命令也发"正在下载"
+        async with self._download_lock:
+            yield event.plain_result(f"📥 正在下载 [{album_id}]...")
         
         # 后台下载任务（完成后通过 context.send_message 发送文件）
         async def _background_dl():
