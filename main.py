@@ -265,6 +265,7 @@ class JMComicPlugin(Star):
             c.download_album(album_id, save_dir, self._cancel_event)
             imgs = self._collect_images(save_dir)
             astrbot_logger.info(f"[JM] dl_work: collected {len(imgs)} images, cancel={self._cancel_event.is_set()}")
+            __import__('sys').stdout.flush()
             if not imgs or self._cancel_event.is_set():
                 return None
             if len(imgs) > self.max_pages:
@@ -273,6 +274,7 @@ class JMComicPlugin(Star):
             PDFMaker.images_to_pdf(imgs, pdf_path)
             pdf_sz = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
             astrbot_logger.info(f"[JM] dl_work: PDF {pdf_sz} bytes for {len(imgs)} images")
+            __import__('sys').stdout.flush()
             return imgs
         
         async with self._download_lock:
@@ -281,6 +283,7 @@ class JMComicPlugin(Star):
             self._cancel_event.clear()
             self._current_task_album_id = album_id
             astrbot_logger.info(f"[JM] Start download album_id={album_id}")
+            __import__('sys').stdout.flush()
             
             _t0 = __import__('time').time()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
