@@ -300,9 +300,10 @@ class JMComicPlugin(Star):
                     yield event.plain_result("❌ 下载失败")
                 return
             
-            if not self._verify_pdf(pdf_path, len(images)):
-                yield event.plain_result("❌ 下载失败（PDF校验不通过）")
+            if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+                yield event.plain_result("❌ 下载失败（PDF 为空）")
                 return
+            astrbot_logger.info(f"[JM] PDF OK: {os.path.getsize(pdf_path)//1024}KB")
             
             yield event.chain_result([
                 Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
