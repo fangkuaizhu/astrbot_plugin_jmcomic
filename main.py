@@ -20,48 +20,32 @@ from .pdf_maker import PDFMaker
 
 module_logger = logging.getLogger(__name__)
 
-# 临时文件根目录（可通过 _conf_schema.json 中的 jm_temp_root 配置）
 JM_TEMP_ROOT = os.path.join('/AstrBot/data', 'jmcomic_temp')
 
 
 class JMComicPlugin(Star):
-    """JMComic PDF下载插件"""
     
     def __init__(self, context: Context):
         super().__init__(context)
-        
-        # 配置
         self.config = context.get_config() or {}
         self.client_impl = self.config.get('client_impl', 'api')
         self.max_pages = self.config.get('max_pages', 300)
-        
-        # 临时文件根目录
         self.jm_temp_root = self.config.get('jm_temp_root', None) or JM_TEMP_ROOT
         
-        # 白名单/黑名单配置
         self.whitelist_enabled = self.config.get('whitelist_enabled', False)
         self.group_whitelist = self.config.get('group_whitelist', [])
         self.group_blacklist = self.config.get('group_blacklist', [])
         astrbot_logger.info(f"Group access: enabled={self.whitelist_enabled}, whitelist={self.group_whitelist}, blacklist={self.group_blacklist}")
         
-        # 初始化组件
         self._client = None
-        
         if not is_available():
             astrbot_logger.error("jmcomic not installed! Run: pip install jmcomic")
-        
         os.makedirs(self.jm_temp_root, exist_ok=True)
         
-        # 并发控制锁
         self._download_lock = asyncio.Lock()
-        
-        # 打断控制
         self._cancel_event = threading.Event()
         self._current_task_album_id = None
-        
-        # 定时清理
         self._cleanup_task = asyncio.create_task(self._scheduled_cleanup())
-        
         astrbot_logger.info("JMComic plugin initialized")
     
     def _is_group_allowed(self, event: AstrMessageEvent) -> bool:
@@ -126,21 +110,16 @@ class JMComicPlugin(Star):
         if not self._is_group_allowed(event):
             yield event.plain_result("❌ 本群组未授权使用此插件")
             return
-        
         try:
             import concurrent.futures
             def _search_work():
-                c = get_jm_client(self.client_impl)
-                return c.search(keyword, page)
+                return get_jm_client(self.client_impl).search(keyword, page)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                _fut = _pool.submit(_search_work)
                 try:
-                    data = _fut.result(timeout=20)
+                    data = _pool.submit(_search_work).result(timeout=20)
                 except concurrent.futures.TimeoutError:
-                    _pool.shutdown(wait=False)
                     yield event.plain_result(f"❌ 搜索超时: [{keyword}]，请稍后重试")
                     return
-            
             results = data.get('results', [])
             total_pages = data.get('total_pages', 0)
             if not results:
@@ -148,11 +127,10 @@ class JMComicPlugin(Star):
                 return
             msg_parts = [f"🔍 搜索结果: {keyword} (第{page}页)\n"]
             for i, item in enumerate(results, 1):
-                msg_parts.append(f"{i}. 📖 {item['title']}")
-                msg_parts.append(f"   🆔 {item['id']}")
+                msg_parts.append(f"{i}. 📖 {item['title']}\n   🆔 {item['id']}")
             if total_pages > 1:
                 msg_parts.append(f"\n📄 共 {total_pages} 页")
-            msg_parts.append(f"💡 使用 /jm <车号> 下载")
+            msg_parts.append("💡 使用 /jm <车号> 下载")
             yield event.plain_result('\n'.join(msg_parts))
         except Exception as e:
             astrbot_logger.error(f"[JM] Search failed: {e}")
@@ -164,10 +142,9 @@ class JMComicPlugin(Star):
         if not self._download_lock.locked():
             yield event.plain_result("📭 当前没有进行中的下载任务")
             return
-        album_id = self._current_task_album_id
         self._cancel_event.set()
-        astrbot_logger.info(f"Cancel requested for album: {album_id}")
-        yield event.plain_result(f"🛑 已发送打断信号，正在停止下载 [{album_id or '未知'}]...")
+        astrbot_logger.info(f"Cancel requested for album: {self._current_task_album_id}")
+        yield event.plain_result(f"🛑 已发送打断信号")
     
     @filter.command("jm")
     async def jm_command(self, event: AstrMessageEvent, album_id: Optional[str] = None):
@@ -185,77 +162,78 @@ class JMComicPlugin(Star):
         tmpdir = os.path.join(self.jm_temp_root, str(album_id))
         pdf_path = os.path.join(tmpdir, f'JM{album_id}.pdf')
         
-        # 缓存命中检查（含完整性校验）
+        # 缓存命中
         if os.path.exists(pdf_path):
             if self._verify_pdf(pdf_path):
                 yield event.chain_result([Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")])
                 return
             astrbot_logger.info(f"[JM] Cache invalid for {album_id}, re-downloading...")
         
-        # 并发限制
+        # 并发限制 + 占锁 + 发提示
         if self._download_lock.locked():
             yield event.plain_result("⏳ 有其他下载任务进行中，请稍后再试...")
             return
         
-        # 提前占锁，防止间隙期第二个命令也发"正在下载"
         async with self._download_lock:
             yield event.plain_result(f"📥 正在下载 [{album_id}]...")
         
-        # 后台下载任务（完成后通过 context.send_message 发送文件）
+        # 后台下载（锁在 _background_dl 内再次获取，间隙极小）
         async def _background_dl():
-            async with self._download_lock:
-                os.makedirs(tmpdir, exist_ok=True)
-                save_dir = os.path.join(tmpdir, 'images')
-                self._cancel_event.clear()
-                self._current_task_album_id = album_id
-                astrbot_logger.info(f"[JM] Start download album_id={album_id}")
-                
-                import concurrent.futures
-                def _dl_work():
-                    c = get_jm_client(self.client_impl)
-                    c.download_album(album_id, save_dir, self._cancel_event)
-                    imgs = self._collect_images(save_dir)
-                    astrbot_logger.info(f"[JM] dl_work: {len(imgs)} images")
-                    if not imgs or self._cancel_event.is_set():
-                        return None
-                    if len(imgs) > self.max_pages:
-                        astrbot_logger.info(f"[JM] dl_work: truncated {len(imgs)} -> {self.max_pages}")
-                        imgs = imgs[:self.max_pages]
-                    PDFMaker.images_to_pdf(imgs, pdf_path)
-                    sz = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
-                    astrbot_logger.info(f"[JM] dl_work: PDF {sz} bytes, {len(imgs)} images")
-                    return imgs
-                
-                pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                try:
-                    images = await asyncio.get_event_loop().run_in_executor(pool, _dl_work)
-                finally:
-                    pool.shutdown(wait=False)
-                
-                if images is None:
-                    msg = "🛑 下载已取消" if self._cancel_event.is_set() else "❌ 下载失败"
+            try:
+                async with self._download_lock:
+                    os.makedirs(tmpdir, exist_ok=True)
+                    save_dir = os.path.join(tmpdir, 'images')
+                    self._cancel_event.clear()
+                    self._current_task_album_id = album_id
+                    astrbot_logger.info(f"[JM] Start download album_id={album_id}")
+                    
+                    import concurrent.futures
+                    def _dl_work():
+                        c = get_jm_client(self.client_impl)
+                        c.download_album(album_id, save_dir, self._cancel_event)
+                        imgs = self._collect_images(save_dir)
+                        astrbot_logger.info(f"[JM] dl_work: {len(imgs)} images")
+                        if not imgs or self._cancel_event.is_set():
+                            return None
+                        if len(imgs) > self.max_pages:
+                            imgs = imgs[:self.max_pages]
+                        PDFMaker.images_to_pdf(imgs, pdf_path)
+                        sz = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
+                        astrbot_logger.info(f"[JM] dl_work: PDF {sz} bytes")
+                        return imgs
+                    
+                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        await self.context.send_message(event.unified_msg_origin, msg)
-                    except:
-                        pass
-                    return
-                
-                if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+                        images = await asyncio.get_event_loop().run_in_executor(pool, _dl_work)
+                    finally:
+                        pool.shutdown(wait=False)
+                    
+                    if images is None:
+                        msg = "🛑 下载已取消" if self._cancel_event.is_set() else "❌ 下载失败"
+                        try:
+                            await self.context.send_message(event.unified_msg_origin, msg)
+                        except Exception as _e2:
+                            astrbot_logger.error(f"[JM] send_msg failed: {_e2}")
+                        return
+                    
+                    if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+                        try:
+                            await self.context.send_message(event.unified_msg_origin, "❌ 下载失败（PDF 为空）")
+                        except Exception as _e2:
+                            astrbot_logger.error(f"[JM] send_msg failed: {_e2}")
+                        return
+                    
+                    astrbot_logger.info(f"[JM] Done {album_id}: {os.path.getsize(pdf_path)//1024}KB PDF")
                     try:
-                        await self.context.send_message(event.unified_msg_origin, "❌ 下载失败（PDF 为空）")
-                    except:
-                        pass
-                    return
-                
-                astrbot_logger.info(f"[JM] Done {album_id}: {os.path.getsize(pdf_path)//1024}KB PDF")
-                try:
-                    from astrbot.api.message_components import MessageChain
-                    await self.context.send_message(
-                        event.unified_msg_origin,
-                        MessageChain([Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")])
-                    )
-                except Exception as e:
-                    astrbot_logger.error(f"[JM] Send failed: {e}")
+                        from astrbot.api.message_components import MessageChain
+                        await self.context.send_message(
+                            event.unified_msg_origin,
+                            MessageChain([Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")])
+                        )
+                    except Exception as e:
+                        astrbot_logger.error(f"[JM] Send failed: {e}")
+            except Exception as e:
+                astrbot_logger.error(f"[JM] Background crash: {e}", exc_info=True)
         
         asyncio.create_task(_background_dl())
     
@@ -265,7 +243,7 @@ class JMComicPlugin(Star):
                 return False
             size = os.path.getsize(pdf_path)
             if size == 0:
-                astrbot_logger.warning(f"[JM] PDF empty (0 bytes): {pdf_path}")
+                astrbot_logger.warning(f"[JM] PDF empty: {pdf_path}")
                 os.remove(pdf_path)
                 return False
             with open(pdf_path, 'rb') as f:
@@ -275,7 +253,7 @@ class JMComicPlugin(Star):
                 astrbot_logger.warning(f"[JM] PDF page mismatch: expected {expected_pages}, got {actual_pages}")
                 os.remove(pdf_path)
                 return False
-            astrbot_logger.info(f"[JM] PDF OK: {actual_pages} pages, {size//1024}KB")
+            astrbot_logger.info(f"[JM] PDF OK: {actual_pages}p, {size//1024}KB")
             return True
         except Exception as e:
             astrbot_logger.error(f"[JM] PDF verify error: {e}")
