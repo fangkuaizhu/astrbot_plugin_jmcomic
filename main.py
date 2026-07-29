@@ -136,11 +136,12 @@ class JMComicPlugin(Star):
             logger.error(f"Cleanup failed: {e}")
     
     @filter.command("jm搜索")
-    async def jm_search(self, event: AstrMessageEvent, keyword: Optional[str] = None):
+    async def jm_search(self, event: AstrMessageEvent, keyword: Optional[str] = None, page: int = 1):
         """
         搜索本子
-        用法: /jm搜索 <关键词>
+        用法: /jm搜索 <关键词> [页码]
         示例: /jm搜索 原神
+              /jm搜索 原神 2
         """
         event.stop_event()
         
@@ -162,7 +163,7 @@ class JMComicPlugin(Star):
             def _search_work():
                 from .jm_client import get_jm_client
                 c = get_jm_client(self.client_impl)
-                return c.search(keyword, 1)
+                return c.search(keyword, page)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
                 _fut = _pool.submit(_search_work)
                 try:
@@ -179,7 +180,7 @@ class JMComicPlugin(Star):
                 yield event.plain_result(f"❌ 没有找到关于 [{keyword}] 的结果")
                 return
             
-            msg_parts = [f"🔍 搜索结果: {keyword}\n"]
+            msg_parts = [f"🔍 搜索结果: {keyword} (第{page}页)\n"]
             for i, item in enumerate(results, 1):
                 msg_parts.append(f"{i}. 📖 {item['title']}")
                 msg_parts.append(f"   🆔 {item['id']}")
@@ -253,58 +254,55 @@ class JMComicPlugin(Star):
             yield event.plain_result("⏳ 有其他下载任务进行中，请稍后再试...")
             return
         
+        # 下载全过程：客户端创建 + 下载 + PDF 都在后台线程执行，避免阻塞
+        import concurrent.futures
+        def _dl_work():
+            from .jm_client import get_jm_client as _get_jm
+            import shutil as _sh
+            c = _get_jm(self.client_impl)
+            c.download_album(album_id, save_dir, self._cancel_event)
+            imgs = self._collect_images(save_dir)
+            if not imgs or self._cancel_event.is_set():
+                return None
+            if len(imgs) > self.max_pages:
+                imgs = imgs[:self.max_pages]
+            PDFMaker.images_to_pdf(imgs, pdf_path)
+            return imgs
+        
         async with self._download_lock:
             os.makedirs(tmpdir, exist_ok=True)
-            try:
-                self._cancel_event.clear()
-                self._current_task_album_id = album_id
-                logger.info(f"[JM] Start download album_id={album_id}")
-                
-                client = self._get_client()
-                loop = asyncio.get_event_loop()
-                
-                save_dir = os.path.join(tmpdir, 'images')
-                _t0 = __import__('time').time()
-                await loop.run_in_executor(None, client.download_album, album_id, save_dir, self._cancel_event)
-                dl_time = __import__('time').time() - _t0
-                
-                if self._cancel_event.is_set():
-                    shutil.rmtree(tmpdir, ignore_errors=True)
-                    yield event.plain_result("🛑 下载已取消")
+            save_dir = os.path.join(tmpdir, 'images')
+            self._cancel_event.clear()
+            self._current_task_album_id = album_id
+            logger.info(f"[JM] Start download album_id={album_id}")
+            
+            _t0 = __import__('time').time()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                _fut = _pool.submit(_dl_work)
+                try:
+                    images = _fut.result(timeout=600)
+                except concurrent.futures.TimeoutError:
+                    _pool.shutdown(wait=False)
+                    yield event.plain_result("❌ 下载超时")
                     return
-                
-                images = self._collect_images(save_dir)
-                if not images:
-                    yield event.plain_result("❌ 下载失败")
-                    return
-                
-                if len(images) > self.max_pages:
-                    logger.info(f"[JM] Album {album_id}: {len(images)} images, truncated to {self.max_pages}")
-                    images = images[:self.max_pages]
-                
-                _t1 = __import__('time').time()
-                await loop.run_in_executor(None, PDFMaker.images_to_pdf, images, pdf_path)
-                pdf_time = __import__('time').time() - _t1
-                
-                if not os.path.exists(pdf_path):
-                    yield event.plain_result("❌ 下载失败")
-                    return
-                
-                pdf_size = os.path.getsize(pdf_path)
-                total_time = dl_time + pdf_time
-                logger.info(f"[JM] Done {album_id}: {len(images)}p -> {pdf_size//1024}KB PDF in {total_time:.1f}s (dl={dl_time:.1f}s+pdf={pdf_time:.1f}s)")
-                
-                yield event.chain_result([
-                    Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
-                ])
-            except Exception as e:
+                _pool.shutdown(wait=False)
+            
+            if images is None:
                 if self._cancel_event.is_set():
                     yield event.plain_result("🛑 下载已取消")
                 else:
-                    logger.error(f"[JM] Failed {album_id}: {e}")
-                    yield event.plain_result(f"❌ 下载失败: {str(e)}")
-            finally:
-                self._current_task_album_id = None
+                    yield event.plain_result("❌ 下载失败")
+                return
+            
+            if not os.path.exists(pdf_path):
+                yield event.plain_result("❌ 下载失败")
+                return
+            
+            pdf_size = os.path.getsize(pdf_path)
+            logger.info(f"[JM] Done {album_id}: {len(images)}p -> {pdf_size//1024}KB PDF")
+            yield event.chain_result([
+                Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")
+            ])
     
     def _collect_images(self, directory: str) -> List[str]:
         """收集目录中的图片文件"""
