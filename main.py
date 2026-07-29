@@ -228,17 +228,8 @@ class JMComicPlugin(Star):
     
     async def _send_file(self, event: AstrMessageEvent, path: str, name: str):
         try:
-            for mod in ['astrbot.core.message.message_event_result', 'astrbot.api.message_components']:
-                try:
-                    m = __import__(mod, fromlist=['MessageChain'])
-                    if hasattr(m, 'MessageChain'):
-                        chain = m.MessageChain([Comp.File(file=path, name=name)])
-                        await self.context.send_message(event.unified_msg_origin, chain)
-                        return
-                except:
-                    continue
-            # last resort: send as plain components list
-            await self.context.send_message(event.unified_msg_origin, [Comp.File(file=path, name=name)])
+            from astrbot.core.message.message_event_result import MessageChain
+            await self.context.send_message(event.unified_msg_origin, MessageChain([Comp.File(file=path, name=name)]))
         except Exception as e:
             astrbot_logger.error(f"[JM] send_file failed: {e}")
     
