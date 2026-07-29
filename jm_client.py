@@ -28,18 +28,19 @@ class JMApiClient:
         self._client = self._option.build_jm_client()
         logger.info(f"JMComic client initialized (impl={client_impl}, retry={self._option.client.retry_times})")
     
-    def search(self, keyword: str, page: int = 1) -> dict:
+    def search(self, keyword: str, page: int = 1, order: str = 'mv') -> dict:
         """
         搜索本子
         
         Args:
             keyword: 搜索关键词
             page: 页码
+            order: 排序方式 (mr=最相关, mv=最多浏览, tf=最多收藏, mt=最新发布)
             
         Returns:
             dict: {'results': [{'id': str, 'title': str}], 'total_pages': int, 'current_page': int}
         """
-        result = self._client.search_site(keyword, page)
+        result = self._client.search_site(keyword, page, order=order)
         
         albums = []
         for album_id, title in result.iter_id_title():

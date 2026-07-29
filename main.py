@@ -113,7 +113,7 @@ class JMComicPlugin(Star):
         try:
             import concurrent.futures
             def _search_work():
-                return get_jm_client(self.client_impl).search(keyword, page)
+                return get_jm_client(self.client_impl).search(keyword, page, 'mv')
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
                 try:
                     data = _pool.submit(_search_work).result(timeout=20)
