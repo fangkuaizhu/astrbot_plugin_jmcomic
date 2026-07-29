@@ -21,26 +21,24 @@ class JMApiClient:
         # 使用自定义 option 减少重试和超时
         self._option = jmcomic.JmOption.default()
         self._option.client.retry_times = 1
-        # 通过 postman meta_data 传递 curl_cffi 超时参数
         meta = self._option.client.postman.get('meta_data', {})
         meta.setdefault('timeout', 10)
         self._option.client.postman.meta_data = meta
         self._client = self._option.build_jm_client()
         logger.info(f"JMComic client initialized (impl={client_impl}, retry={self._option.client.retry_times})")
     
-    def search(self, keyword: str, page: int = 1, order: str = 'mv') -> dict:
+    def search(self, keyword: str, page: int = 1) -> dict:
         """
         搜索本子
         
         Args:
             keyword: 搜索关键词
             page: 页码
-            order: 排序方式 (mr=最相关, mv=最多浏览, tf=最多收藏, mt=最新发布)
             
         Returns:
             dict: {'results': [{'id': str, 'title': str}], 'total_pages': int, 'current_page': int}
         """
-        result = self._client.search_site(keyword, page, order=order)
+        result = self._client.search_site(keyword, page)
         
         albums = []
         for album_id, title in result.iter_id_title():
