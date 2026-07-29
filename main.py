@@ -215,7 +215,8 @@ class JMComicPlugin(Star):
                     astrbot_logger.info(f"[JM] Done {album_id}: {os.path.getsize(pdf_path)//1024}KB PDF")
                     await self._send_file(event, pdf_path, f"JM{album_id}.pdf")
             except Exception as e:
-                astrbot_logger.error(f"[JM] Background crash: {e}", exc_info=True)
+                astrbot_logger.error(f"[JM] Background crash: {e}")
+                await self._send_msg(event, f"❌ {str(e)[:80]}")
         
         asyncio.create_task(_bg())
         yield event.plain_result(f"📥 正在下载 [{album_id}]...")
