@@ -38,7 +38,8 @@ class JMApiClient:
         Returns:
             dict: {'results': [{'id': str, 'title': str}], 'total_pages': int, 'current_page': int}
         """
-        result = self._client.search_site(keyword, page)
+        # mv = 最多浏览（默认 mr = 最相关）
+        result = self._client.search_site(keyword, page, order_by='mv')
         
         albums = []
         for album_id, title in result.iter_id_title():
