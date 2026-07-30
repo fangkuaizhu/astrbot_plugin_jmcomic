@@ -105,24 +105,36 @@ class JMComicPlugin(Star):
             astrbot_logger.error(f"Cleanup failed: {e}")
     
     def _cleanup_orphan_images(self):
-        """清理中断下载残留的零散图片（非 chapter PDF），防止磁盘泄漏"""
+        """清理中断下载残留的零散图片，保留 chapter PDF 和标记文件"""
         if not os.path.exists(self.jm_temp_root):
             return
-        for item in os.listdir(self.jm_temp_root):
-            item_path = os.path.join(self.jm_temp_root, item)
-            if not os.path.isdir(item_path):
+        img_exts = {'.webp', '.jpg', '.jpeg', '.png', '.gif'}
+        for album_dir in os.listdir(self.jm_temp_root):
+            dir_path = os.path.join(self.jm_temp_root, album_dir)
+            if not os.path.isdir(dir_path):
                 continue
             cleaned = 0
-            for f in os.listdir(item_path):
-                # 只删图片（chXXX_XXXX.webp/jpg/png），不碰 PDF 和标记文件
-                if f.count('_') >= 1 and any(f.endswith(e) for e in ('.webp', '.jpg', '.jpeg', '.png', '.gif')):
+            for root, dirs, files in os.walk(dir_path):
+                # 跳过顶级目录（保留 chapter PDF 所在位置）
+                if root == dir_path:
+                    # 只删根目录下的图片文件（非 PDF、非标记文件）
+                    for f in files:
+                        if os.path.splitext(f)[1].lower() in img_exts:
+                            try:
+                                os.remove(os.path.join(root, f))
+                                cleaned += 1
+                            except Exception:
+                                pass
+                else:
+                    # 子目录里的全部清掉（旧版 images/ 目录）
+                    import shutil
                     try:
-                        os.remove(os.path.join(item_path, f))
+                        shutil.rmtree(root, ignore_errors=True)
                         cleaned += 1
                     except Exception:
                         pass
             if cleaned:
-                astrbot_logger.info(f"Cleaned {cleaned} orphan images from {item}")
+                astrbot_logger.info(f"Cleaned {cleaned} orphan images from {album_dir}")
     
     @filter.command("jm搜索")
     async def jm_search(self, event: AstrMessageEvent, keyword: Optional[str] = None, page: int = 1):
