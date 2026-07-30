@@ -50,6 +50,8 @@ class JMComicPlugin(Star):
         self._current_progress = None  # 供 /jm进度 查询
         self._dl_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
         self._cleanup_task = asyncio.create_task(self._scheduled_cleanup())
+        # 启动时清理中断残留的零散图片文件
+        self._cleanup_orphan_images()
         astrbot_logger.info("JMComic plugin initialized")
     
     def _is_group_allowed(self, event: AstrMessageEvent) -> bool:
@@ -101,6 +103,26 @@ class JMComicPlugin(Star):
                         module_logger.warning(f"Failed to remove {item_path}: {e}")
         except Exception as e:
             astrbot_logger.error(f"Cleanup failed: {e}")
+    
+    def _cleanup_orphan_images(self):
+        """清理中断下载残留的零散图片（非 chapter PDF），防止磁盘泄漏"""
+        if not os.path.exists(self.jm_temp_root):
+            return
+        for item in os.listdir(self.jm_temp_root):
+            item_path = os.path.join(self.jm_temp_root, item)
+            if not os.path.isdir(item_path):
+                continue
+            cleaned = 0
+            for f in os.listdir(item_path):
+                # 只删图片（chXXX_XXXX.webp/jpg/png），不碰 PDF 和标记文件
+                if f.count('_') >= 1 and any(f.endswith(e) for e in ('.webp', '.jpg', '.jpeg', '.png', '.gif')):
+                    try:
+                        os.remove(os.path.join(item_path, f))
+                        cleaned += 1
+                    except Exception:
+                        pass
+            if cleaned:
+                astrbot_logger.info(f"Cleaned {cleaned} orphan images from {item}")
     
     @filter.command("jm搜索")
     async def jm_search(self, event: AstrMessageEvent, keyword: Optional[str] = None, page: int = 1):
@@ -172,7 +194,7 @@ class JMComicPlugin(Star):
         yield event.plain_result(f"🛑 已发送打断信号")
     
     @filter.command("jm")
-    async def jm_command(self, event: AstrMessageEvent, album_id: Optional[str] = None, page: Optional[int] = None):
+    async def jm_command(self, event: AstrMessageEvent, album_id: Optional[str] = None, page: Optional[str] = None):
         event.stop_event()
         if not album_id:
             yield event.plain_result("❌ 请提供车号\n示例: /jm 350234")
@@ -184,8 +206,31 @@ class JMComicPlugin(Star):
             yield event.plain_result("❌ 本群组未授权使用此插件")
             return
         
+        # 解析 page 参数
+        page_num = 1  # 默认
+        if page is not None:
+            if page.lower() == 'all':
+                page_num = 'all'
+            elif page.isdigit():
+                page_num = int(page)
+            else:
+                yield event.plain_result("❌ page 参数无效，请输入数字或 'all'\n示例: /jm 350236 /jm 350236 2 /jm 350236 all")
+                return
+        
         tmpdir = os.path.join(self.jm_temp_root, str(album_id))
         os.makedirs(tmpdir, exist_ok=True)
+        
+        # 统计缓存
+        cached_chs = []
+        for i in range(1, 1000):
+            p = os.path.join(tmpdir, f'chapter_{i:03d}.pdf')
+            if os.path.exists(p) and os.path.getsize(p) > 0:
+                with open(p, 'rb') as fp:
+                    if fp.read(4) == b'%PDF':
+                        cached_chs.append(i)
+            else:
+                break
+        
         umo = event.unified_msg_origin
         
         # 并发限制
@@ -208,14 +253,14 @@ class JMComicPlugin(Star):
                     
                     from .download_worker import run_download, CHAPTERS_PER_PAGE
                     
-                    astrbot_logger.info(f"[JM] Start (process) album_id={album_id}, page={page}")
+                    astrbot_logger.info(f"[JM] Start (process) album_id={album_id}, page={page_num}")
                     
                     pool = self._dl_pool
                     fut = pool.submit(
                         run_download,
                         album_id,
                         self.jm_temp_root,
-                        page or 1,
+                        page_num,
                         self.client_impl,
                         self.max_pages,
                         cancel_file,
@@ -286,14 +331,18 @@ class JMComicPlugin(Star):
                         await asyncio.sleep(0.5)  # 避免消息风暴
                     
                     astrbot_logger.info(f"[JM] Done {album_id}: {len(pdfs)} PDFs, {sum(p['pages'] for p in pdfs)}p")
-                    await self._send_msg(umo, f"✅ 第{ch_start}-{ch_end}话下载完成\n💡 继续发送 /jm {album_id} { (page or 1) + 1 } 下载下一批")
+                    if isinstance(page_num, int):
+                        await self._send_msg(umo, f"✅ 第{ch_start}-{ch_end}话下载完成\n💡 继续发送 /jm {album_id} {page_num + 1} 下载下一批")
+                    else:
+                        await self._send_msg(umo, f"✅ 全部 {ch_end} 话下载完成")
             except Exception as e:
                 astrbot_logger.error(f"[JM] Background crash: {e}")
                 await self._send_msg(umo, f"❌ {str(e)[:80]}")
         
         asyncio.create_task(_bg())
-        page_info = f"（第 {(page or 1)} 批）" if page else ""
-        yield event.plain_result(f"📥 正在下载 [{album_id}]{page_info}")
+        page_info = f"（第 {page_num} 批）" if isinstance(page_num, int) and page_num > 1 else ""
+        cache_info = f"（已缓存 {len(cached_chs)} 话）" if cached_chs else ""
+        yield event.plain_result(f"📥 正在下载 [{album_id}]{page_info}{cache_info}")
     
     async def _send_msg(self, target, text: str):
         """target: AstrMessageEvent 或 unified_msg_origin 字符串"""
