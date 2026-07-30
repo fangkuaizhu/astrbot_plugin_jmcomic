@@ -47,6 +47,7 @@ class JMComicPlugin(Star):
         self._download_lock = asyncio.Lock()
         self._cancel_event = threading.Event()
         self._current_task_album_id = None
+        self._current_progress = None  # 供 /jm进度 查询
         self._dl_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
         self._cleanup_task = asyncio.create_task(self._scheduled_cleanup())
         astrbot_logger.info("JMComic plugin initialized")
@@ -139,6 +140,24 @@ class JMComicPlugin(Star):
             astrbot_logger.error(f"[JM] Search failed: {e}")
             yield event.plain_result(f"❌ 搜索失败: {str(e)}")
     
+    @filter.command("jm进度")
+    async def jm_progress(self, event: AstrMessageEvent):
+        event.stop_event()
+        p = self._current_progress
+        if not p:
+            yield event.plain_result("📭 当前没有进行中的下载任务")
+            return
+        phase = p.get('phase', 'download')
+        cur = p.get('current', 0)
+        tot = p.get('total', 0)
+        pct = p.get('pct', 0)
+        ep = p.get('episode', '')
+        aid = p.get('album_id', '?')
+        labels = {'download': '📥 下载中', 'convert': '🔄 转换格式', 'pdf': '📄 生成 PDF'}
+        label = labels.get(phase, phase)
+        ep_info = f" | 第{ep}话" if ep else ""
+        yield event.plain_result(f"{label} [{aid}]: {pct}% ({cur}/{tot}){ep_info}")
+    
     @filter.command("jmstop")
     async def jm_stop(self, event: AstrMessageEvent):
         event.stop_event()
@@ -177,6 +196,9 @@ class JMComicPlugin(Star):
             yield event.plain_result("⏳ 有其他下载任务进行中，请稍后再试...")
             return
         
+        # 捕获 umo 防止 event 在 handler 返回后变 stale
+        umo = event.unified_msg_origin
+        
         # 定义后台下载任务（必须在 yield 之前 create_task）
         async def _bg():
             try:
@@ -205,90 +227,78 @@ class JMComicPlugin(Star):
                         cancel_file,
                         progress_file
                     )
-                    # 轮询（总超时 1800 秒 = 30 分钟兜底）
+                    # 轮询取消信号 + 静默更新进度（供 /jm进度 查询）
                     t0 = __import__('time').time()
-                    last_progress_report = 0  # 上次汇报进度的时间戳
-                    last_reported_pct = -1
                     
                     while True:
                         try:
                             result = await asyncio.wait_for(asyncio.wrap_future(fut), timeout=3.0)
-                            break  # 下载完成
+                            break
                         except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
                             elapsed = __import__('time').time() - t0
                             
-                            # 用户取消 → 真杀子进程
                             if self._cancel_event.is_set():
                                 open(cancel_file, 'w').close()
                                 fut.cancel()
-                                # 关闭池以杀死运行中的 worker，然后重建
                                 old_pool = self._dl_pool
                                 self._dl_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
                                 old_pool.shutdown(wait=False, cancel_futures=True)
-                                await self._send_msg(event, "🛑 下载已取消")
+                                await self._send_msg(umo, "🛑 下载已取消")
                                 return
                             
-                            # 60 分钟硬超时（防止真死锁，大专辑 CDN 慢）
                             if elapsed > 3600:
                                 old_pool = self._dl_pool
                                 self._dl_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
                                 old_pool.shutdown(wait=False, cancel_futures=True)
-                                await self._send_msg(event, "❌ 下载超时（60 分钟）")
+                                await self._send_msg(umo, "❌ 下载超时（60 分钟）")
                                 return
                             
-                            # 读取进度（每 5 秒汇报一次）
-                            now = __import__('time').time()
-                            if now - last_progress_report >= 5 and os.path.exists(progress_file):
+                            # 静默更新进度缓存
+                            if os.path.exists(progress_file):
                                 try:
                                     with open(progress_file) as pf:
                                         p = json.loads(pf.read())
-                                    pct = p.get('pct', 0)
-                                    phase = p.get('phase', 'download')
-                                    cur = p.get('current', 0)
-                                    tot = p.get('total', 0)
-                                    # 仅在进度变化 ≥5% 或切换阶段时汇报
-                                    if pct != last_reported_pct and (pct - last_reported_pct >= 5 or phase != getattr(self, '_last_phase', '')):
-                                        last_reported_pct = pct
-                                        self._last_phase = phase
-                                        last_progress_report = now
-                                        labels = {'download': '📥 下载中', 'convert': '🔄 转换格式', 'pdf': '📄 生成 PDF'}
-                                        label = labels.get(phase, phase)
-                                        await self._send_msg(event, f"{label} [{album_id}]: {pct}% ({cur}/{tot})")
+                                    p['album_id'] = album_id
+                                    self._current_progress = p
                                 except Exception:
                                     pass
                     
                     if not result['ok']:
                         err = result.get('error', '')
                         if 'cancel' in (err or '').lower():
-                            await self._send_msg(event, "🛑 下载已取消")
+                            await self._send_msg(umo, "🛑 下载已取消")
                         else:
-                            await self._send_msg(event, f"❌ 下载失败: {err[:80] if err else '未知错误'}")
+                            await self._send_msg(umo, f"❌ 下载失败: {err[:80] if err else '未知错误'}")
                         return
                     
                     if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
-                        await self._send_msg(event, "❌ 下载失败（PDF 为空）")
+                        await self._send_msg(umo, "❌ 下载失败（PDF 为空）")
                         return
                     astrbot_logger.info(f"[JM] Done {album_id}: {result['size_bytes']//1024}KB PDF, {result['pages']}p")
-                    await self._send_file(event, pdf_path, f"JM{album_id}.pdf")
+                    await self._send_file(umo, pdf_path, f"JM{album_id}.pdf")
             except Exception as e:
                 astrbot_logger.error(f"[JM] Background crash: {e}")
-                await self._send_msg(event, f"❌ {str(e)[:80]}")
+                await self._send_msg(umo, f"❌ {str(e)[:80]}")
         
         asyncio.create_task(_bg())
         yield event.plain_result(f"📥 正在下载 [{album_id}]...")
     
-    async def _send_msg(self, event: AstrMessageEvent, text: str):
+    async def _send_msg(self, target, text: str):
+        """target: AstrMessageEvent 或 unified_msg_origin 字符串"""
         try:
             from astrbot.core.message.message_event_result import MessageChain
             from astrbot.api.message_components import Plain
-            await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(text)]))
+            umo = target.unified_msg_origin if hasattr(target, 'unified_msg_origin') else target
+            await self.context.send_message(umo, MessageChain([Plain(text)]))
         except Exception as e:
             astrbot_logger.error(f"[JM] send_msg failed: {e}")
     
-    async def _send_file(self, event: AstrMessageEvent, path: str, name: str):
+    async def _send_file(self, target, path: str, name: str):
+        """target: AstrMessageEvent 或 unified_msg_origin 字符串"""
         try:
             from astrbot.core.message.message_event_result import MessageChain
-            await self.context.send_message(event.unified_msg_origin, MessageChain([Comp.File(file=path, name=name)]))
+            umo = target.unified_msg_origin if hasattr(target, 'unified_msg_origin') else target
+            await self.context.send_message(umo, MessageChain([Comp.File(file=path, name=name)]))
         except Exception as e:
             astrbot_logger.error(f"[JM] send_file failed: {e}")
     
