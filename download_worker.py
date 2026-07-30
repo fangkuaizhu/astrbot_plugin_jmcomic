@@ -92,13 +92,29 @@ def run_download(
         if not image_paths:
             return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'no images downloaded'}
         
-        # 收集并截断
+        # 收集图片并转换 webp → jpeg（img2pdf 不支持 webp）
         exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
         all_imgs = []
         for root, _, files in os.walk(save_dir):
             for f in sorted(files):
-                if os.path.splitext(f)[1].lower() in exts:
-                    all_imgs.append(os.path.join(root, f))
+                fpath = os.path.join(root, f)
+                ext = os.path.splitext(f)[1].lower()
+                if ext not in exts:
+                    continue
+                if ext == '.webp':
+                    try:
+                        from PIL import Image
+                        jpg_path = fpath.rsplit('.', 1)[0] + '.jpg'
+                        with Image.open(fpath) as img:
+                            if img.mode in ('RGBA', 'P'):
+                                img = img.convert('RGB')
+                            img.save(jpg_path, 'JPEG', quality=95)
+                        os.remove(fpath)
+                        all_imgs.append(jpg_path)
+                    except Exception:
+                        all_imgs.append(fpath)  # 转换失败保留原文件
+                else:
+                    all_imgs.append(fpath)
         
         if len(all_imgs) > max_pages:
             all_imgs = all_imgs[:max_pages]
