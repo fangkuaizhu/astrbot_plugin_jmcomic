@@ -98,9 +98,7 @@ def run_download(
         total_ch = len(episodes)
 
         # 计算此页的章节范围
-        if isinstance(page_num, int) and page_num <= 0:
-            ch_start, ch_end = 1, total_ch  # all
-        elif page_num == 'all':
+        if page_num is None or page_num == 'all' or (isinstance(page_num, int) and page_num <= 0):
             ch_start, ch_end = 1, total_ch
         else:
             pn = int(page_num)
@@ -126,59 +124,87 @@ def run_download(
                 return {'ok': False, 'error': 'cancelled', 'pdfs': pdfs}
 
             episode = episodes[ch_abs_idx - 1]
-            # 跳过已缓存的章节
             chapter_pdf = os.path.join(tmpdir, f'chapter_{ch_abs_idx:03d}.pdf')
+
+            # 跳过已缓存章节（带基本校验）
             if os.path.exists(chapter_pdf) and os.path.getsize(chapter_pdf) > 0:
-                with open(chapter_pdf, 'rb') as f:
-                    cp = _count_pdf_pages(f.read())
-                pdfs.append({'path': chapter_pdf, 'pages': cp, 'size': os.path.getsize(chapter_pdf)})
+                # 检查 PDF 头部防止残损
+                with open(chapter_pdf, 'rb') as _fp:
+                    if _fp.read(4) == b'%PDF':
+                        # 不读全文，只读前 8KB 数页码
+                        _fp.seek(0)
+                        _head = _fp.read(8192)
+                        cp = _head.count(b'/Type /Page')
+                        pdfs.append({'path': chapter_pdf, 'pages': max(cp, 1), 'size': os.path.getsize(chapter_pdf)})
+                        _write_progress(progress_path, 'download', ch_abs_idx, total_ch,
+                                       {'page': f'ch{ch_start}-ch{ch_end}', 'current_ch': ch_abs_idx})
+                        continue
+                # 损坏的缓存，删掉重下
+                try:
+                    os.remove(chapter_pdf)
+                except Exception:
+                    pass
+
+            # 下载该话（失败跳过，不丢失已完成的章节）
+            try:
+                photo_id = episode[0]
+                photo = client.get_photo_detail(photo_id)
+
+                chapter_imgs = []
+                for page_idx, img_detail in enumerate(photo, 1):
+                    if cancel_signal_path and os.path.exists(cancel_signal_path):
+                        os.remove(cancel_signal_path)
+                        return {'ok': False, 'error': 'cancelled', 'pdfs': pdfs}
+                    try:
+                        ext = os.path.splitext(img_detail.img_url)[1] if hasattr(img_detail, 'img_url') else '.webp'
+                        ext = ext or '.jpg'  # 兜底：无扩展名默认 jpg
+                        img_path = os.path.join(tmpdir, f'ch{ch_abs_idx:03d}_{page_idx:04d}{ext}')
+                        client.download_by_image_detail(img_detail, img_path)
+                        chapter_imgs.append(img_path)
+                    except Exception as e:
+                        logger.warning(f"Failed img {page_idx} ch{ch_abs_idx}: {e}")
+
+                if not chapter_imgs:
+                    logger.warning(f"No images for chapter {ch_abs_idx}, skip")
+                    continue
+
+                # WebP → JPG
+                chapter_imgs = _convert_webp_to_jpg(chapter_imgs)
+
+                if len(chapter_imgs) > max_pages:
+                    chapter_imgs = chapter_imgs[:max_pages]
+
+                # 生成该话 PDF
+                PDFMaker.images_to_pdf(chapter_imgs, chapter_pdf)
+
+                # 清理该话图片
+                for img in chapter_imgs:
+                    try:
+                        os.remove(img)
+                    except Exception:
+                        pass
+
+                if not os.path.exists(chapter_pdf) or os.path.getsize(chapter_pdf) == 0:
+                    logger.warning(f"Empty PDF for chapter {ch_abs_idx}, skip")
+                    continue
+
+                with open(chapter_pdf, 'rb') as _fp:
+                    _head = _fp.read(8192)
+                    cp = _head.count(b'/Type /Page')
+                pdfs.append({'path': chapter_pdf, 'pages': max(cp, 1), 'size': os.path.getsize(chapter_pdf)})
                 _write_progress(progress_path, 'download', ch_abs_idx, total_ch,
                                {'page': f'ch{ch_start}-ch{ch_end}', 'current_ch': ch_abs_idx})
-                continue
 
-            # 下载该话图片
-            photo_id = episode[0]
-            try:
-                photo = client.get_photo_detail(photo_id)
             except Exception as e:
-                logger.warning(f"Failed to get photo detail for chapter {ch_abs_idx}: {e}")
+                logger.warning(f"Chapter {ch_abs_idx} failed: {e}, skip")
+                # 尝试清理残图
+                for f in os.listdir(tmpdir):
+                    if f.startswith(f'ch{ch_abs_idx:03d}_'):
+                        try:
+                            os.remove(os.path.join(tmpdir, f))
+                        except Exception:
+                            pass
                 continue
-
-            chapter_imgs = []
-            for page_idx, img_detail in enumerate(photo, 1):
-                if cancel_signal_path and os.path.exists(cancel_signal_path):
-                    os.remove(cancel_signal_path)
-                    return {'ok': False, 'error': 'cancelled', 'pdfs': pdfs}
-                try:
-                    ext = os.path.splitext(img_detail.img_url)[1] if hasattr(img_detail, 'img_url') else '.webp'
-                    img_path = os.path.join(tmpdir, f'ch{ch_abs_idx:03d}_{page_idx:04d}{ext}')
-                    client.download_by_image_detail(img_detail, img_path)
-                    chapter_imgs.append(img_path)
-                except Exception as e:
-                    logger.warning(f"Failed img {page_idx} ch{ch_abs_idx}: {e}")
-
-            if not chapter_imgs:
-                logger.warning(f"No images for chapter {ch_abs_idx}, skip")
-                continue
-
-            # WebP → JPG
-            chapter_imgs = _convert_webp_to_jpg(chapter_imgs)
-
-            if len(chapter_imgs) > max_pages:
-                chapter_imgs = chapter_imgs[:max_pages]
-
-            # 生成该话 PDF
-            PDFMaker.images_to_pdf(chapter_imgs, chapter_pdf)
-
-            if not os.path.exists(chapter_pdf) or os.path.getsize(chapter_pdf) == 0:
-                logger.warning(f"Empty PDF for chapter {ch_abs_idx}, skip")
-                continue
-
-            with open(chapter_pdf, 'rb') as f:
-                cp = _count_pdf_pages(f.read())
-            pdfs.append({'path': chapter_pdf, 'pages': cp, 'size': os.path.getsize(chapter_pdf)})
-            _write_progress(progress_path, 'download', ch_abs_idx, total_ch,
-                           {'page': f'ch{ch_start}-ch{ch_end}', 'current_ch': ch_abs_idx})
 
         _write_progress(progress_path, 'pdf', len(pdfs), max(1, ch_end - ch_start + 1),
                        {'page': f'ch{ch_start}-ch{ch_end}', 'done': True})
