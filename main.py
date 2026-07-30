@@ -8,6 +8,7 @@ import asyncio
 import logging
 import shutil
 import threading
+import concurrent.futures
 from datetime import datetime, time, timedelta
 from typing import List, Optional
 from astrbot.api.event import filter, AstrMessageEvent
@@ -45,6 +46,7 @@ class JMComicPlugin(Star):
         self._download_lock = asyncio.Lock()
         self._cancel_event = threading.Event()
         self._current_task_album_id = None
+        self._dl_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
         self._cleanup_task = asyncio.create_task(self._scheduled_cleanup())
         astrbot_logger.info("JMComic plugin initialized")
     
@@ -187,10 +189,9 @@ class JMComicPlugin(Star):
                     cancel_file = os.path.join(tmpdir, '.cancel')
                     self._cancel_event.clear()
                     
-                    import concurrent.futures
                     from .download_worker import run_download
                     
-                    pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+                    pool = self._dl_pool
                     try:
                         fut = pool.submit(
                             run_download,
@@ -209,15 +210,10 @@ class JMComicPlugin(Star):
                                 if self._cancel_event.is_set():
                                     open(cancel_file, 'w').close()
                                     fut.cancel()
-                                    pool.shutdown(wait=False)
                                     await self._send_msg(event, "🛑 下载已取消")
                                     return
-                        pool.shutdown(wait=False)
                     finally:
-                        try:
-                            pool.shutdown(wait=False)
-                        except:
-                            pass
+                        pass
                     
                     if not result['ok']:
                         err = result.get('error', '')
@@ -292,4 +288,5 @@ class JMComicPlugin(Star):
     async def terminate(self):
         if self._cleanup_task:
             self._cleanup_task.cancel()
+        self._dl_pool.shutdown(wait=False)
         astrbot_logger.info("JMComic plugin terminated")
