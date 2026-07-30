@@ -4,9 +4,11 @@
 """
 
 import os
-import shutil
+import sys
 import logging
-from typing import List, Optional
+
+# 确保子进程能找到插件目录
+sys.path.insert(0, '/AstrBot/data/plugins/astrbot_plugin_jmcomic')
 
 logger = logging.getLogger(__name__)
 

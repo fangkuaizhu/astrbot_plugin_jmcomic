@@ -241,7 +241,9 @@ class JMComicPlugin(Star):
     
     async def _send_msg(self, event: AstrMessageEvent, text: str):
         try:
-            await self.context.send_message(event.unified_msg_origin, text)
+            from astrbot.core.message.message_event_result import MessageChain
+            from astrbot.api.message_components import Plain
+            await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(text)]))
         except Exception as e:
             astrbot_logger.error(f"[JM] send_msg failed: {e}")
     
