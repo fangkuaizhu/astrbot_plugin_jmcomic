@@ -150,13 +150,16 @@ class JMComicPlugin(Star):
         phase = p.get('phase', 'download')
         cur = p.get('current', 0)
         tot = p.get('total', 0)
-        pct = p.get('pct', 0)
         ep = p.get('episode', '')
         aid = p.get('album_id', '?')
         labels = {'download': '📥 下载中', 'convert': '🔄 转换格式', 'pdf': '📄 生成 PDF'}
         label = labels.get(phase, phase)
         ep_info = f" | 第{ep}话" if ep else ""
-        yield event.plain_result(f"{label} [{aid}]: {pct}% ({cur}/{tot}){ep_info}")
+        if tot > 0:
+            pct = p.get('pct', 0)
+            yield event.plain_result(f"{label} [{aid}]: {pct}% ({cur}/{tot}){ep_info}")
+        else:
+            yield event.plain_result(f"{label} [{aid}]: 已下载 {cur} 张图{ep_info}")
     
     @filter.command("jmstop")
     async def jm_stop(self, event: AstrMessageEvent):

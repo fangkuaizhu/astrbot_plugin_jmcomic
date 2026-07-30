@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 def _write_progress(path: str, phase: str, current: int, total: int, extra: dict = None):
     """写进度文件供主进程读取"""
     try:
-        data = {"phase": phase, "current": current, "total": total,
-                "pct": int(current / max(total, 1) * 100)}
+        pct = int(current / max(total, 1) * 100) if total > 0 else 0
+        data = {"phase": phase, "current": current, "total": total, "pct": pct}
         if extra:
             data.update(extra)
         with open(path, 'w') as f:
@@ -82,9 +82,7 @@ def run_download(
         image_paths = []
         global_idx = 0
         
-        # 估算总页数（用于进度）
-        total_est = sum(len(ep) for ep in episodes)
-        _write_progress(progress_path, 'download', 0, total_est,
+        _write_progress(progress_path, 'download', 0, 0,
                        {'episode': f'0/{len(episodes)}'})
         
         for ep_idx, episode in enumerate(episodes, 1):
@@ -106,8 +104,8 @@ def run_download(
                     img_path = os.path.join(save_dir, f'{global_idx:05d}{ext}')
                     client.download_by_image_detail(img_detail, img_path)
                     image_paths.append(img_path)
-                    # 每张图写一次进度
-                    _write_progress(progress_path, 'download', global_idx, total_est,
+                    # 每张图写一次进度（不显示总数，总数未知）
+                    _write_progress(progress_path, 'download', global_idx, 0,
                                    {'episode': f'{ep_idx}/{len(episodes)}'})
                 except Exception as e:
                     logger.warning(f"Failed to download image {global_idx}: {e}")
