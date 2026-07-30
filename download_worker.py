@@ -222,6 +222,11 @@ def run_download(
         _write_progress(progress_path, 'pdf', len(pdfs), max(1, ch_end - ch_start + 1),
                        {'page': f'ch{ch_start}-ch{ch_end}', 'done': True})
 
+        # 5 秒后强制退出子进程（防止 PIL/numpy 等库导致解释器清理死锁）
+        # 正常 return 会先通过 IPC 将结果发给父进程，Timer 超时则暴力杀
+        import threading
+        threading.Timer(5, os._exit, args=[0]).start()
+        
         return {
             'ok': True,
             'album_id': album_id,
