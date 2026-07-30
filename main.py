@@ -205,9 +205,9 @@ class JMComicPlugin(Star):
                         t0 = __import__('time').time()
                         while True:
                             try:
-                                result = fut.result(timeout=0.1)
+                                result = await asyncio.wait_for(asyncio.wrap_future(fut), timeout=0.5)
                                 break
-                            except concurrent.futures.TimeoutError:
+                            except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
                                 if self._cancel_event.is_set():
                                     open(cancel_file, 'w').close()
                                     fut.cancel()
