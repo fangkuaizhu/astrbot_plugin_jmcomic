@@ -219,6 +219,28 @@ def run_download(
                             pass
                 continue
 
+        # 合并所有章节 PDF 为一个
+        combined_pdf = None
+        if len(pdfs) > 1:
+            try:
+                from pypdf import PdfWriter
+                page_label = f'page_{page_num}' if isinstance(page_num, int) and page_num > 0 else 'all'
+                combined_pdf = os.path.join(tmpdir, f'{page_label}.pdf')
+                merger = PdfWriter()
+                for p in pdfs:
+                    merger.append(p['path'])
+                merger.write(combined_pdf)
+                merger.close()
+                with open(combined_pdf, 'rb') as _fp:
+                    _head = _fp.read(8192)
+                    cp = _head.count(b'/Type /Page')
+                pdfs.insert(0, {'path': combined_pdf, 'pages': max(cp, len(pdfs)),
+                              'size': os.path.getsize(combined_pdf), 'combined': True})
+            except Exception as e:
+                logger.warning(f"PDF merge failed, fallback to individual: {e}")
+        elif len(pdfs) == 1:
+            combined_pdf = pdfs[0]['path']
+
         _write_progress(progress_path, 'pdf', len(pdfs), max(1, ch_end - ch_start + 1),
                        {'page': f'ch{ch_start}-ch{ch_end}', 'done': True})
 
@@ -235,6 +257,7 @@ def run_download(
             'ch_end': ch_end,
             'total_ch': total_ch,
             'pdfs': pdfs,
+            'combined_pdf': combined_pdf,
             'error': None,
         }
 

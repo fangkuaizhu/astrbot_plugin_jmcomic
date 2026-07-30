@@ -333,14 +333,29 @@ class JMComicPlugin(Star):
                     ch_end = result.get('ch_end', len(pdfs))
                     total_ch = result.get('total_ch', '?')
                     
-                    await self._send_msg(umo, f"📄 共生成 {len(pdfs)} 个 PDF（第{ch_start}-{ch_end}话 / 共{total_ch}话）")
-                    
-                    for pdf in pdfs:
-                        path = pdf['path']
-                        pages = pdf['pages']
-                        fname = os.path.basename(path)
-                        await self._send_file(umo, path, f"JM{album_id}_{fname}")
-                        await asyncio.sleep(0.5)  # 避免消息风暴
+                    # 如果有合并 PDF，只发这一个
+                    combined = result.get('combined_pdf')
+                    if combined and os.path.exists(combined) and os.path.getsize(combined) > 0:
+                        if isinstance(page_num, int) and page_num > 0:
+                            fname = f"JM{album_id}_P{page_num}.pdf"
+                        else:
+                            fname = f"JM{album_id}_all.pdf"
+                        await self._send_msg(umo, f"📄 合并PDF已生成（第{ch_start}-{ch_end}话 / 共{total_ch}话）")
+                        await self._send_file(umo, combined, fname)
+                        await self._send_msg(umo, f"✅ 第{ch_start}-{ch_end}话下载完成")
+                        if isinstance(page_num, int) and page_num > 0:
+                            await self._send_msg(umo, f"💡 继续发送 /jm {album_id} {page_num + 1} 下载下一批")
+                    else:
+                        # 回退：逐个发送（合并失败时）
+                        await self._send_msg(umo, f"📄 共生成 {len(pdfs)} 个 PDF（第{ch_start}-{ch_end}话 / 共{total_ch}话）")
+                        for pdf in pdfs:
+                            path = pdf['path']
+                            pages = pdf['pages']
+                            fname = os.path.basename(path)
+                            await self._send_file(umo, path, f"JM{album_id}_{fname}")
+                            await asyncio.sleep(0.5)
+                        if isinstance(page_num, int) and page_num > 0:
+                            await self._send_msg(umo, f"💡 继续发送 /jm {album_id} {page_num + 1} 下载下一批")
                     
                     astrbot_logger.info(f"[JM] Done {album_id}: {len(pdfs)} PDFs, {sum(p['pages'] for p in pdfs)}p")
                     if isinstance(page_num, int):
