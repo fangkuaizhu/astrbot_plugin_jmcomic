@@ -233,7 +233,7 @@ class JMComicPlugin(Star):
                                 old_pool = self._dl_pool
                                 self._dl_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
                                 old_pool.shutdown(wait=False, cancel_futures=True)
-                                await self._send_msg(event, "❌ 下载超时（30 分钟）")
+                                await self._send_msg(event, "❌ 下载超时（60 分钟）")
                                 return
                             
                             # 读取进度（每 5 秒汇报一次）
