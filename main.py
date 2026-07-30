@@ -5,6 +5,7 @@ JMComic AstrBot 插件
 
 import os
 import asyncio
+import json
 import logging
 import shutil
 import threading
@@ -185,40 +186,76 @@ class JMComicPlugin(Star):
                     self._current_task_album_id = album_id
                     astrbot_logger.info(f"[JM] Start (process) album_id={album_id}")
                     
-                    # 取消信号文件（ProcessPool 无法共享 threading.Event）
                     cancel_file = os.path.join(tmpdir, '.cancel')
-                    self._cancel_event.clear()
+                    progress_file = os.path.join(tmpdir, '.progress')
+                    # 清除旧进度
+                    for f in (cancel_file, progress_file):
+                        if os.path.exists(f):
+                            os.remove(f)
                     
                     from .download_worker import run_download
                     
                     pool = self._dl_pool
-                    try:
-                        fut = pool.submit(
-                            run_download,
-                            album_id,
-                            self.jm_temp_root,
-                            self.client_impl,
-                            self.max_pages,
-                            cancel_file
-                        )
-                        # 轮询取消信号（总超时 600 秒）
-                        t0 = __import__('time').time()
-                        while True:
-                            try:
-                                result = await asyncio.wait_for(asyncio.wrap_future(fut), timeout=0.5)
-                                break
-                            except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
-                                if self._cancel_event.is_set():
-                                    open(cancel_file, 'w').close()
-                                    fut.cancel()
-                                    await self._send_msg(event, "🛑 下载已取消")
-                                    return
-                                if __import__('time').time() - t0 > 600:
-                                    fut.cancel()
-                                    await self._send_msg(event, "❌ 下载超时（10 分钟）")
-                                    return
-                    finally:
-                        pass
+                    fut = pool.submit(
+                        run_download,
+                        album_id,
+                        self.jm_temp_root,
+                        self.client_impl,
+                        self.max_pages,
+                        cancel_file,
+                        progress_file
+                    )
+                    # 轮询（总超时 1800 秒 = 30 分钟兜底）
+                    t0 = __import__('time').time()
+                    last_progress_report = 0  # 上次汇报进度的时间戳
+                    last_reported_pct = -1
+                    
+                    while True:
+                        try:
+                            result = await asyncio.wait_for(asyncio.wrap_future(fut), timeout=3.0)
+                            break  # 下载完成
+                        except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
+                            elapsed = __import__('time').time() - t0
+                            
+                            # 用户取消 → 真杀子进程
+                            if self._cancel_event.is_set():
+                                open(cancel_file, 'w').close()
+                                fut.cancel()
+                                # 关闭池以杀死运行中的 worker，然后重建
+                                old_pool = self._dl_pool
+                                self._dl_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+                                old_pool.shutdown(wait=False, cancel_futures=True)
+                                await self._send_msg(event, "🛑 下载已取消")
+                                return
+                            
+                            # 30 分钟硬超时（防止真死锁）
+                            if elapsed > 1800:
+                                old_pool = self._dl_pool
+                                self._dl_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+                                old_pool.shutdown(wait=False, cancel_futures=True)
+                                await self._send_msg(event, "❌ 下载超时（30 分钟）")
+                                return
+                            
+                            # 读取进度（每 5 秒汇报一次）
+                            now = __import__('time').time()
+                            if now - last_progress_report >= 5 and os.path.exists(progress_file):
+                                try:
+                                    with open(progress_file) as pf:
+                                        p = json.loads(pf.read())
+                                    pct = p.get('pct', 0)
+                                    phase = p.get('phase', 'download')
+                                    cur = p.get('current', 0)
+                                    tot = p.get('total', 0)
+                                    # 仅在进度变化 ≥5% 或切换阶段时汇报
+                                    if pct != last_reported_pct and (pct - last_reported_pct >= 5 or phase != getattr(self, '_last_phase', '')):
+                                        last_reported_pct = pct
+                                        self._last_phase = phase
+                                        last_progress_report = now
+                                        labels = {'download': '📥 下载中', 'convert': '🔄 转换格式', 'pdf': '📄 生成 PDF'}
+                                        label = labels.get(phase, phase)
+                                        await self._send_msg(event, f"{label} [{album_id}]: {pct}% ({cur}/{tot})")
+                                except Exception:
+                                    pass
                     
                     if not result['ok']:
                         err = result.get('error', '')

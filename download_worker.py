@@ -5,6 +5,7 @@
 
 import os
 import sys
+import json
 import logging
 from typing import Optional
 
@@ -12,6 +13,19 @@ from typing import Optional
 sys.path.insert(0, '/AstrBot/data/plugins/astrbot_plugin_jmcomic')
 
 logger = logging.getLogger(__name__)
+
+
+def _write_progress(path: str, phase: str, current: int, total: int, extra: dict = None):
+    """写进度文件供主进程读取"""
+    try:
+        data = {"phase": phase, "current": current, "total": total,
+                "pct": int(current / max(total, 1) * 100)}
+        if extra:
+            data.update(extra)
+        with open(path, 'w') as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 
 def _count_pdf_pages(raw: bytes) -> int:
@@ -24,6 +38,7 @@ def run_download(
     client_impl: str = 'api',
     max_pages: int = 300,
     cancel_signal_path: Optional[str] = None,
+    progress_path: Optional[str] = None,
 ) -> dict:
     """
     在独立进程中执行完整的下载→PDF 流程。
@@ -67,6 +82,11 @@ def run_download(
         image_paths = []
         global_idx = 0
         
+        # 估算总页数（用于进度）
+        total_est = sum(len(ep) for ep in episodes)
+        _write_progress(progress_path, 'download', 0, total_est,
+                       {'episode': f'0/{len(episodes)}'})
+        
         for ep_idx, episode in enumerate(episodes, 1):
             # 取消信号检查
             if cancel_signal_path and os.path.exists(cancel_signal_path):
@@ -86,6 +106,9 @@ def run_download(
                     img_path = os.path.join(save_dir, f'{global_idx:05d}{ext}')
                     client.download_by_image_detail(img_detail, img_path)
                     image_paths.append(img_path)
+                    # 每张图写一次进度
+                    _write_progress(progress_path, 'download', global_idx, total_est,
+                                   {'episode': f'{ep_idx}/{len(episodes)}'})
                 except Exception as e:
                     logger.warning(f"Failed to download image {global_idx}: {e}")
         
@@ -93,8 +116,10 @@ def run_download(
             return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'no images downloaded'}
         
         # 收集图片并转换 webp → jpeg（img2pdf 不支持 webp）
+        _write_progress(progress_path, 'convert', 0, len(all_imgs))
         exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
         all_imgs = []
+        converted = 0
         for root, _, files in os.walk(save_dir):
             for f in sorted(files):
                 fpath = os.path.join(root, f)
@@ -112,14 +137,18 @@ def run_download(
                         os.remove(fpath)
                         all_imgs.append(jpg_path)
                     except Exception:
-                        all_imgs.append(fpath)  # 转换失败保留原文件
+                        all_imgs.append(fpath)
                 else:
                     all_imgs.append(fpath)
+                converted += 1
+                if converted % 50 == 0:
+                    _write_progress(progress_path, 'convert', converted, len(all_imgs))
         
         if len(all_imgs) > max_pages:
             all_imgs = all_imgs[:max_pages]
         
         # 生成 PDF
+        _write_progress(progress_path, 'pdf', 0, len(all_imgs))
         PDFMaker.images_to_pdf(all_imgs, pdf_path)
         
         if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
