@@ -179,40 +179,58 @@ class JMComicPlugin(Star):
             try:
                 async with self._download_lock:
                     os.makedirs(tmpdir, exist_ok=True)
-                    save_dir = os.path.join(tmpdir, 'images')
                     self._cancel_event.clear()
                     self._current_task_album_id = album_id
-                    astrbot_logger.info(f"[JM] Start download album_id={album_id}")
+                    astrbot_logger.info(f"[JM] Start (process) album_id={album_id}")
+                    
+                    # 取消信号文件（ProcessPool 无法共享 threading.Event）
+                    cancel_file = os.path.join(tmpdir, '.cancel')
+                    self._cancel_event.clear()
                     
                     import concurrent.futures
-                    def _work():
-                        c = get_jm_client(self.client_impl)
-                        c.download_album(album_id, save_dir, self._cancel_event)
-                        imgs = self._collect_images(save_dir)
-                        astrbot_logger.info(f"[JM] dl_work: {len(imgs)} images")
-                        if not imgs or self._cancel_event.is_set():
-                            return None
-                        if len(imgs) > self.max_pages:
-                            imgs = imgs[:self.max_pages]
-                        PDFMaker.images_to_pdf(imgs, pdf_path)
-                        sz = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
-                        astrbot_logger.info(f"[JM] dl_work: PDF {sz} bytes")
-                        return imgs
+                    from .download_worker import run_download
                     
-                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
                     try:
-                        imgs = await asyncio.get_event_loop().run_in_executor(pool, _work)
-                    finally:
+                        fut = pool.submit(
+                            run_download,
+                            album_id,
+                            self.jm_temp_root,
+                            self.client_impl,
+                            self.max_pages,
+                            cancel_file
+                        )
+                        # 轮询取消信号
+                        while True:
+                            try:
+                                result = fut.result(timeout=0.5)
+                                break
+                            except concurrent.futures.TimeoutError:
+                                if self._cancel_event.is_set():
+                                    open(cancel_file, 'w').close()
+                                    fut.cancel()
+                                    pool.shutdown(wait=False)
+                                    await self._send_msg(event, "🛑 下载已取消")
+                                    return
                         pool.shutdown(wait=False)
+                    finally:
+                        try:
+                            pool.shutdown(wait=False)
+                        except:
+                            pass
                     
-                    if imgs is None:
-                        m = "🛑 下载已取消" if self._cancel_event.is_set() else "❌ 下载失败"
-                        await self._send_msg(event, m)
+                    if not result['ok']:
+                        err = result.get('error', '')
+                        if 'cancel' in (err or '').lower():
+                            await self._send_msg(event, "🛑 下载已取消")
+                        else:
+                            await self._send_msg(event, f"❌ 下载失败: {err[:80] if err else '未知错误'}")
                         return
+                    
                     if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
                         await self._send_msg(event, "❌ 下载失败（PDF 为空）")
                         return
-                    astrbot_logger.info(f"[JM] Done {album_id}: {os.path.getsize(pdf_path)//1024}KB PDF")
+                    astrbot_logger.info(f"[JM] Done {album_id}: {result['size_bytes']//1024}KB PDF, {result['pages']}p")
                     await self._send_file(event, pdf_path, f"JM{album_id}.pdf")
             except Exception as e:
                 astrbot_logger.error(f"[JM] Background crash: {e}")

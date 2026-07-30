@@ -1,0 +1,127 @@
+"""
+独立进程下载 Worker
+避免 curl_cffi 的 GIL 阻塞事件循环导致 WebSocket 断连
+"""
+
+import os
+import shutil
+import logging
+from typing import List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _count_pdf_pages(raw: bytes) -> int:
+    return raw.count(b'/Type /Page') - raw.count(b'/Type /Pages')
+
+
+def run_download(
+    album_id: str,
+    temp_root: str,
+    client_impl: str = 'api',
+    max_pages: int = 300,
+    cancel_signal_path: Optional[str] = None,
+) -> dict:
+    """
+    在独立进程中执行完整的下载→PDF 流程。
+    返回 {"ok": bool, "pdf_path": str | None, "pages": int, "size_bytes": int, "error": str | None}
+    """
+    try:
+        # 延迟导入，避免主进程的模块状态干扰
+        from pdf_maker import PDFMaker
+        
+        # jmcomic 客户端创建
+        import jmcomic
+        opt = jmcomic.JmOption.default()
+        opt.client.retry_times = 1
+        meta = opt.client.postman.get('meta_data', {})
+        meta.setdefault('timeout', 10)
+        opt.client.postman.meta_data = meta
+        client = opt.build_jm_client()
+        
+        # 目录准备
+        tmpdir = os.path.join(temp_root, str(album_id))
+        pdf_path = os.path.join(tmpdir, f'JM{album_id}.pdf')
+        os.makedirs(tmpdir, exist_ok=True)
+        save_dir = os.path.join(tmpdir, 'images')
+        
+        # 取消信号检查
+        if cancel_signal_path and os.path.exists(cancel_signal_path):
+            os.remove(cancel_signal_path)
+            return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'cancelled_before_start'}
+        
+        # 下载本子
+        try:
+            ext_id = _extract_album_id(album_id)
+            album = client.get_album_detail(ext_id)
+            episodes = album.episode_list
+            if not episodes:
+                return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'no episodes'}
+        except Exception as e:
+            return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': str(e)}
+        
+        image_paths = []
+        global_idx = 0
+        
+        for ep_idx, episode in enumerate(episodes, 1):
+            # 取消信号检查
+            if cancel_signal_path and os.path.exists(cancel_signal_path):
+                os.remove(cancel_signal_path)
+                return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'cancelled'}
+            
+            photo_id = episode[0]
+            photo = client.get_photo_detail(photo_id)
+            
+            for img_detail in photo:
+                if cancel_signal_path and os.path.exists(cancel_signal_path):
+                    os.remove(cancel_signal_path)
+                    return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'cancelled'}
+                try:
+                    global_idx += 1
+                    ext = os.path.splitext(img_detail.img_url)[1] if hasattr(img_detail, 'img_url') else '.webp'
+                    img_path = os.path.join(save_dir, f'{global_idx:05d}{ext}')
+                    client.download_by_image_detail(img_detail, img_path)
+                    image_paths.append(img_path)
+                except Exception as e:
+                    logger.warning(f"Failed to download image {global_idx}: {e}")
+        
+        if not image_paths:
+            return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'no images downloaded'}
+        
+        # 收集并截断
+        exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+        all_imgs = []
+        for root, _, files in os.walk(save_dir):
+            for f in sorted(files):
+                if os.path.splitext(f)[1].lower() in exts:
+                    all_imgs.append(os.path.join(root, f))
+        
+        if len(all_imgs) > max_pages:
+            all_imgs = all_imgs[:max_pages]
+        
+        # 生成 PDF
+        PDFMaker.images_to_pdf(all_imgs, pdf_path)
+        
+        if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+            return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'PDF empty'}
+        
+        size = os.path.getsize(pdf_path)
+        with open(pdf_path, 'rb') as f:
+            pages = _count_pdf_pages(f.read())
+        
+        return {'ok': True, 'pdf_path': pdf_path, 'pages': pages, 'size_bytes': size, 'error': None}
+        
+    except Exception as e:
+        return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': str(e)}
+
+
+def _extract_album_id(album_id: str) -> int:
+    """提取本子 ID"""
+    import re
+    if str(album_id).isdigit():
+        return int(album_id)
+    for pattern in [r'(?:JM|jm)(\d+)', r'/album/(\d+)', r'/photo/(\d+)', r'(\d{4,})']:
+        match = re.search(pattern, str(album_id))
+        if match:
+            return int(match.group(1))
+    raise ValueError(f"无法识别车号: {album_id}")
