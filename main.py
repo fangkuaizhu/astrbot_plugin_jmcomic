@@ -228,8 +228,8 @@ class JMComicPlugin(Star):
                                 await self._send_msg(event, "🛑 下载已取消")
                                 return
                             
-                            # 30 分钟硬超时（防止真死锁）
-                            if elapsed > 1800:
+                            # 60 分钟硬超时（防止真死锁，大专辑 CDN 慢）
+                            if elapsed > 3600:
                                 old_pool = self._dl_pool
                                 self._dl_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
                                 old_pool.shutdown(wait=False, cancel_futures=True)
