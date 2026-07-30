@@ -150,19 +150,32 @@ def run_download(
                 photo_id = episode[0]
                 photo = client.get_photo_detail(photo_id)
 
-                chapter_imgs = []
-                for page_idx, img_detail in enumerate(photo, 1):
-                    if cancel_signal_path and os.path.exists(cancel_signal_path):
-                        os.remove(cancel_signal_path)
-                        return {'ok': False, 'error': 'cancelled', 'pdfs': pdfs}
-                    try:
+                # 并行下载该话所有图片（3 线程，I/O 密集无 GIL 问题）
+                import concurrent.futures as _cf
+                chapter_imgs_ordered = []
+                with _cf.ThreadPoolExecutor(max_workers=3) as _img_pool:
+                    _futs = {}
+                    for page_idx, img_detail in enumerate(photo, 1):
                         ext = os.path.splitext(img_detail.img_url)[1] if hasattr(img_detail, 'img_url') else '.webp'
-                        ext = ext or '.jpg'  # 兜底：无扩展名默认 jpg
+                        ext = ext or '.jpg'
                         img_path = os.path.join(tmpdir, f'ch{ch_abs_idx:03d}_{page_idx:04d}{ext}')
-                        client.download_by_image_detail(img_detail, img_path)
-                        chapter_imgs.append(img_path)
-                    except Exception as e:
-                        logger.warning(f"Failed img {page_idx} ch{ch_abs_idx}: {e}")
+                        _futs[_img_pool.submit(client.download_by_image_detail, img_detail, img_path)] = (page_idx, img_path)
+                    
+                    for _fut in _cf.as_completed(_futs):
+                        page_idx, img_path = _futs[_fut]
+                        try:
+                            _fut.result()
+                            chapter_imgs_ordered.append((page_idx, img_path))
+                        except Exception as e:
+                            logger.warning(f"Failed img {page_idx} ch{ch_abs_idx}: {e}")
+                
+                if cancel_signal_path and os.path.exists(cancel_signal_path):
+                    os.remove(cancel_signal_path)
+                    return {'ok': False, 'error': 'cancelled', 'pdfs': pdfs}
+                
+                # 按页码排序后取路径
+                chapter_imgs_ordered.sort(key=lambda x: x[0])
+                chapter_imgs = [p for _, p in chapter_imgs_ordered]
 
                 if not chapter_imgs:
                     logger.warning(f"No images for chapter {ch_abs_idx}, skip")
