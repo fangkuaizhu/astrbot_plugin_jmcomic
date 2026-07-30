@@ -6,6 +6,7 @@
 import os
 import sys
 import logging
+from typing import Optional
 
 # 确保子进程能找到插件目录
 sys.path.insert(0, '/AstrBot/data/plugins/astrbot_plugin_jmcomic')
