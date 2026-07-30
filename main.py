@@ -201,16 +201,21 @@ class JMComicPlugin(Star):
                             self.max_pages,
                             cancel_file
                         )
-                        # 轮询取消信号
+                        # 轮询取消信号（总超时 600 秒）
+                        t0 = __import__('time').time()
                         while True:
                             try:
-                                result = fut.result(timeout=0.5)
+                                result = fut.result(timeout=0.1)
                                 break
                             except concurrent.futures.TimeoutError:
                                 if self._cancel_event.is_set():
                                     open(cancel_file, 'w').close()
                                     fut.cancel()
                                     await self._send_msg(event, "🛑 下载已取消")
+                                    return
+                                if __import__('time').time() - t0 > 600:
+                                    fut.cancel()
+                                    await self._send_msg(event, "❌ 下载超时（10 分钟）")
                                     return
                     finally:
                         pass
