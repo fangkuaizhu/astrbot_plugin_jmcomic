@@ -172,7 +172,7 @@ class JMComicPlugin(Star):
         yield event.plain_result(f"🛑 已发送打断信号")
     
     @filter.command("jm")
-    async def jm_command(self, event: AstrMessageEvent, album_id: Optional[str] = None):
+    async def jm_command(self, event: AstrMessageEvent, album_id: Optional[str] = None, page: Optional[int] = None):
         event.stop_event()
         if not album_id:
             yield event.plain_result("❌ 请提供车号\n示例: /jm 350234")
@@ -185,54 +185,44 @@ class JMComicPlugin(Star):
             return
         
         tmpdir = os.path.join(self.jm_temp_root, str(album_id))
-        pdf_path = os.path.join(tmpdir, f'JM{album_id}.pdf')
-        
-        # 缓存命中
-        if os.path.exists(pdf_path):
-            if self._verify_pdf(pdf_path):
-                yield event.chain_result([Comp.File(file=pdf_path, name=f"JM{album_id}.pdf")])
-                return
-            astrbot_logger.info(f"[JM] Cache invalid for {album_id}, re-downloading...")
+        os.makedirs(tmpdir, exist_ok=True)
+        umo = event.unified_msg_origin
         
         # 并发限制
         if self._download_lock.locked():
             yield event.plain_result("⏳ 有其他下载任务进行中，请稍后再试...")
             return
         
-        # 捕获 umo 防止 event 在 handler 返回后变 stale
-        umo = event.unified_msg_origin
-        
-        # 定义后台下载任务（必须在 yield 之前 create_task）
+        # 定义后台下载任务
         async def _bg():
             try:
                 async with self._download_lock:
-                    os.makedirs(tmpdir, exist_ok=True)
                     self._cancel_event.clear()
                     self._current_task_album_id = album_id
-                    astrbot_logger.info(f"[JM] Start (process) album_id={album_id}")
                     
                     cancel_file = os.path.join(tmpdir, '.cancel')
                     progress_file = os.path.join(tmpdir, '.progress')
-                    # 清除旧进度
                     for f in (cancel_file, progress_file):
                         if os.path.exists(f):
                             os.remove(f)
                     
-                    from .download_worker import run_download
+                    from .download_worker import run_download, CHAPTERS_PER_PAGE
+                    
+                    astrbot_logger.info(f"[JM] Start (process) album_id={album_id}, page={page}")
                     
                     pool = self._dl_pool
                     fut = pool.submit(
                         run_download,
                         album_id,
                         self.jm_temp_root,
+                        page or 1,
                         self.client_impl,
                         self.max_pages,
                         cancel_file,
-                        progress_file
+                        progress_file,
                     )
-                    # 轮询取消信号 + 静默更新进度（供 /jm进度 查询）
-                    t0 = __import__('time').time()
                     
+                    t0 = __import__('time').time()
                     while True:
                         try:
                             result = await asyncio.wait_for(asyncio.wrap_future(fut), timeout=3.0)
@@ -256,7 +246,7 @@ class JMComicPlugin(Star):
                                 await self._send_msg(umo, "❌ 下载超时（60 分钟）")
                                 return
                             
-                            # 静默更新进度缓存
+                            # 静默更新进度
                             if os.path.exists(progress_file):
                                 try:
                                     with open(progress_file) as pf:
@@ -266,25 +256,44 @@ class JMComicPlugin(Star):
                                 except Exception:
                                     pass
                     
-                    if not result['ok']:
+                    if not result.get('ok'):
                         err = result.get('error', '')
                         if 'cancel' in (err or '').lower():
                             await self._send_msg(umo, "🛑 下载已取消")
+                        elif 'out of range' in (err or ''):
+                            total_ch = result.get('total_ch', '?')
+                            await self._send_msg(umo, f"⚠️ 该本子只有 {total_ch} 话，没有更多了")
                         else:
                             await self._send_msg(umo, f"❌ 下载失败: {err[:80] if err else '未知错误'}")
                         return
                     
-                    if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
-                        await self._send_msg(umo, "❌ 下载失败（PDF 为空）")
+                    pdfs = result.get('pdfs', [])
+                    if not pdfs:
+                        await self._send_msg(umo, "❌ 没有生成任何 PDF")
                         return
-                    astrbot_logger.info(f"[JM] Done {album_id}: {result['size_bytes']//1024}KB PDF, {result['pages']}p")
-                    await self._send_file(umo, pdf_path, f"JM{album_id}.pdf")
+                    
+                    ch_start = result.get('ch_start', 1)
+                    ch_end = result.get('ch_end', len(pdfs))
+                    total_ch = result.get('total_ch', '?')
+                    
+                    await self._send_msg(umo, f"📄 共生成 {len(pdfs)} 个 PDF（第{ch_start}-{ch_end}话 / 共{total_ch}话）")
+                    
+                    for pdf in pdfs:
+                        path = pdf['path']
+                        pages = pdf['pages']
+                        fname = os.path.basename(path)
+                        await self._send_file(umo, path, f"JM{album_id}_{fname}")
+                        await asyncio.sleep(0.5)  # 避免消息风暴
+                    
+                    astrbot_logger.info(f"[JM] Done {album_id}: {len(pdfs)} PDFs, {sum(p['pages'] for p in pdfs)}p")
+                    await self._send_msg(umo, f"✅ 第{ch_start}-{ch_end}话下载完成\n💡 继续发送 /jm {album_id} { (page or 1) + 1 } 下载下一批")
             except Exception as e:
                 astrbot_logger.error(f"[JM] Background crash: {e}")
                 await self._send_msg(umo, f"❌ {str(e)[:80]}")
         
         asyncio.create_task(_bg())
-        yield event.plain_result(f"📥 正在下载 [{album_id}]...")
+        page_info = f"（第 {(page or 1)} 批）" if page else ""
+        yield event.plain_result(f"📥 正在下载 [{album_id}]{page_info}")
     
     async def _send_msg(self, target, text: str):
         """target: AstrMessageEvent 或 unified_msg_origin 字符串"""

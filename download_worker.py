@@ -1,22 +1,23 @@
 """
 独立进程下载 Worker
 避免 curl_cffi 的 GIL 阻塞事件循环导致 WebSocket 断连
+支持逐话生成 PDF + 分页下载
 """
 
 import os
 import sys
 import json
 import logging
-from typing import Optional
+from typing import Optional, List
 
-# 确保子进程能找到插件目录
 sys.path.insert(0, '/AstrBot/data/plugins/astrbot_plugin_jmcomic')
 
 logger = logging.getLogger(__name__)
 
+CHAPTERS_PER_PAGE = 10
+
 
 def _write_progress(path: str, phase: str, current: int, total: int, extra: dict = None):
-    """写进度文件供主进程读取"""
     try:
         pct = int(current / max(total, 1) * 100) if total > 0 else 0
         data = {"phase": phase, "current": current, "total": total, "pct": pct}
@@ -32,138 +33,172 @@ def _count_pdf_pages(raw: bytes) -> int:
     return raw.count(b'/Type /Page') - raw.count(b'/Type /Pages')
 
 
+def _convert_webp_to_jpg(paths: List[str]) -> List[str]:
+    """将列表中的 webp 转为 jpg，返回新路径列表"""
+    from PIL import Image
+    out = []
+    for p in paths:
+        if not p.lower().endswith('.webp'):
+            out.append(p)
+            continue
+        try:
+            jpg = p.rsplit('.', 1)[0] + '.jpg'
+            with Image.open(p) as img:
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                img.save(jpg, 'JPEG', quality=95)
+            os.remove(p)
+            out.append(jpg)
+        except Exception:
+            out.append(p)
+    return out
+
+
 def run_download(
     album_id: str,
     temp_root: str,
+    page_num: int = 1,
     client_impl: str = 'api',
     max_pages: int = 300,
     cancel_signal_path: Optional[str] = None,
     progress_path: Optional[str] = None,
 ) -> dict:
     """
-    在独立进程中执行完整的下载→PDF 流程。
-    返回 {"ok": bool, "pdf_path": str | None, "pages": int, "size_bytes": int, "error": str | None}
+    下载指定页的章节，每话独立出 PDF。
+    返回 {ok, album_id, page_num, ch_start, ch_end, total_ch, pdfs: [{path, pages, size}], error}
     """
     try:
-        # 延迟导入，避免主进程的模块状态干扰
         from pdf_maker import PDFMaker
-        
-        # jmcomic 客户端创建
         import jmcomic
+
         opt = jmcomic.JmOption.default()
         opt.client.retry_times = 1
         meta = opt.client.postman.get('meta_data', {})
         meta.setdefault('timeout', 10)
         opt.client.postman.meta_data = meta
         client = opt.build_jm_client()
-        
-        # 目录准备
+
         tmpdir = os.path.join(temp_root, str(album_id))
-        pdf_path = os.path.join(tmpdir, f'JM{album_id}.pdf')
         os.makedirs(tmpdir, exist_ok=True)
-        save_dir = os.path.join(tmpdir, 'images')
-        os.makedirs(save_dir, exist_ok=True)
-        
-        # 取消信号检查
+
         if cancel_signal_path and os.path.exists(cancel_signal_path):
             os.remove(cancel_signal_path)
-            return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'cancelled_before_start'}
-        
-        # 下载本子
+            return {'ok': False, 'error': 'cancelled_before_start'}
+
+        # 获取本子信息
         try:
             ext_id = _extract_album_id(album_id)
             album = client.get_album_detail(ext_id)
             episodes = album.episode_list
             if not episodes:
-                return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'no episodes'}
+                return {'ok': False, 'error': 'no episodes'}
         except Exception as e:
-            return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': str(e)}
-        
-        image_paths = []
-        global_idx = 0
-        
-        _write_progress(progress_path, 'download', 0, 0,
-                       {'episode': f'0/{len(episodes)}'})
-        
-        for ep_idx, episode in enumerate(episodes, 1):
-            # 取消信号检查
+            return {'ok': False, 'error': str(e)}
+
+        total_ch = len(episodes)
+
+        # 计算此页的章节范围
+        if isinstance(page_num, int) and page_num <= 0:
+            ch_start, ch_end = 1, total_ch  # all
+        elif page_num == 'all':
+            ch_start, ch_end = 1, total_ch
+        else:
+            pn = int(page_num)
+            ch_start = (pn - 1) * CHAPTERS_PER_PAGE + 1
+            ch_end = min(pn * CHAPTERS_PER_PAGE, total_ch)
+
+        if ch_start > total_ch:
+            return {
+                'ok': False, 'album_id': album_id, 'page_num': page_num,
+                'ch_start': ch_start, 'ch_end': ch_end, 'total_ch': total_ch,
+                'error': f"page {page_num} out of range ({total_ch} chapters total)",
+                'pdfs': []
+            }
+
+        _write_progress(progress_path, 'download', ch_start, total_ch,
+                       {'page': f'ch{ch_start}-ch{ch_end}'})
+
+        pdfs = []
+        for ch_abs_idx in range(ch_start, ch_end + 1):
+            # 取消检查
             if cancel_signal_path and os.path.exists(cancel_signal_path):
                 os.remove(cancel_signal_path)
-                return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'cancelled'}
-            
+                return {'ok': False, 'error': 'cancelled', 'pdfs': pdfs}
+
+            episode = episodes[ch_abs_idx - 1]
+            # 跳过已缓存的章节
+            chapter_pdf = os.path.join(tmpdir, f'chapter_{ch_abs_idx:03d}.pdf')
+            if os.path.exists(chapter_pdf) and os.path.getsize(chapter_pdf) > 0:
+                with open(chapter_pdf, 'rb') as f:
+                    cp = _count_pdf_pages(f.read())
+                pdfs.append({'path': chapter_pdf, 'pages': cp, 'size': os.path.getsize(chapter_pdf)})
+                _write_progress(progress_path, 'download', ch_abs_idx, total_ch,
+                               {'page': f'ch{ch_start}-ch{ch_end}', 'current_ch': ch_abs_idx})
+                continue
+
+            # 下载该话图片
             photo_id = episode[0]
-            photo = client.get_photo_detail(photo_id)
-            
-            for img_detail in photo:
+            try:
+                photo = client.get_photo_detail(photo_id)
+            except Exception as e:
+                logger.warning(f"Failed to get photo detail for chapter {ch_abs_idx}: {e}")
+                continue
+
+            chapter_imgs = []
+            for page_idx, img_detail in enumerate(photo, 1):
                 if cancel_signal_path and os.path.exists(cancel_signal_path):
                     os.remove(cancel_signal_path)
-                    return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'cancelled'}
+                    return {'ok': False, 'error': 'cancelled', 'pdfs': pdfs}
                 try:
-                    global_idx += 1
                     ext = os.path.splitext(img_detail.img_url)[1] if hasattr(img_detail, 'img_url') else '.webp'
-                    img_path = os.path.join(save_dir, f'{global_idx:05d}{ext}')
+                    img_path = os.path.join(tmpdir, f'ch{ch_abs_idx:03d}_{page_idx:04d}{ext}')
                     client.download_by_image_detail(img_detail, img_path)
-                    image_paths.append(img_path)
-                    # 每张图写一次进度（不显示总数，总数未知）
-                    _write_progress(progress_path, 'download', global_idx, 0,
-                                   {'episode': f'{ep_idx}/{len(episodes)}'})
+                    chapter_imgs.append(img_path)
                 except Exception as e:
-                    logger.warning(f"Failed to download image {global_idx}: {e}")
-        
-        if not image_paths:
-            return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'no images downloaded'}
-        
-        # 收集图片并转换 webp → jpeg（img2pdf 不支持 webp）
-        _write_progress(progress_path, 'convert', 0, len(all_imgs))
-        exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
-        all_imgs = []
-        converted = 0
-        for root, _, files in os.walk(save_dir):
-            for f in sorted(files):
-                fpath = os.path.join(root, f)
-                ext = os.path.splitext(f)[1].lower()
-                if ext not in exts:
-                    continue
-                if ext == '.webp':
-                    try:
-                        from PIL import Image
-                        jpg_path = fpath.rsplit('.', 1)[0] + '.jpg'
-                        with Image.open(fpath) as img:
-                            if img.mode in ('RGBA', 'P'):
-                                img = img.convert('RGB')
-                            img.save(jpg_path, 'JPEG', quality=95)
-                        os.remove(fpath)
-                        all_imgs.append(jpg_path)
-                    except Exception:
-                        all_imgs.append(fpath)
-                else:
-                    all_imgs.append(fpath)
-                converted += 1
-                if converted % 50 == 0:
-                    _write_progress(progress_path, 'convert', converted, len(all_imgs))
-        
-        if len(all_imgs) > max_pages:
-            all_imgs = all_imgs[:max_pages]
-        
-        # 生成 PDF
-        _write_progress(progress_path, 'pdf', 0, len(all_imgs))
-        PDFMaker.images_to_pdf(all_imgs, pdf_path)
-        
-        if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
-            return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': 'PDF empty'}
-        
-        size = os.path.getsize(pdf_path)
-        with open(pdf_path, 'rb') as f:
-            pages = _count_pdf_pages(f.read())
-        
-        return {'ok': True, 'pdf_path': pdf_path, 'pages': pages, 'size_bytes': size, 'error': None}
-        
+                    logger.warning(f"Failed img {page_idx} ch{ch_abs_idx}: {e}")
+
+            if not chapter_imgs:
+                logger.warning(f"No images for chapter {ch_abs_idx}, skip")
+                continue
+
+            # WebP → JPG
+            chapter_imgs = _convert_webp_to_jpg(chapter_imgs)
+
+            if len(chapter_imgs) > max_pages:
+                chapter_imgs = chapter_imgs[:max_pages]
+
+            # 生成该话 PDF
+            PDFMaker.images_to_pdf(chapter_imgs, chapter_pdf)
+
+            if not os.path.exists(chapter_pdf) or os.path.getsize(chapter_pdf) == 0:
+                logger.warning(f"Empty PDF for chapter {ch_abs_idx}, skip")
+                continue
+
+            with open(chapter_pdf, 'rb') as f:
+                cp = _count_pdf_pages(f.read())
+            pdfs.append({'path': chapter_pdf, 'pages': cp, 'size': os.path.getsize(chapter_pdf)})
+            _write_progress(progress_path, 'download', ch_abs_idx, total_ch,
+                           {'page': f'ch{ch_start}-ch{ch_end}', 'current_ch': ch_abs_idx})
+
+        _write_progress(progress_path, 'pdf', len(pdfs), max(1, ch_end - ch_start + 1),
+                       {'page': f'ch{ch_start}-ch{ch_end}', 'done': True})
+
+        return {
+            'ok': True,
+            'album_id': album_id,
+            'page_num': page_num,
+            'ch_start': ch_start,
+            'ch_end': ch_end,
+            'total_ch': total_ch,
+            'pdfs': pdfs,
+            'error': None,
+        }
+
     except Exception as e:
-        return {'ok': False, 'pdf_path': None, 'pages': 0, 'size_bytes': 0, 'error': str(e)}
+        return {'ok': False, 'error': str(e), 'pdfs': []}
 
 
 def _extract_album_id(album_id: str) -> int:
-    """提取本子 ID"""
     import re
     if str(album_id).isdigit():
         return int(album_id)
