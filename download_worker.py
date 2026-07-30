@@ -47,6 +47,7 @@ def run_download(
         pdf_path = os.path.join(tmpdir, f'JM{album_id}.pdf')
         os.makedirs(tmpdir, exist_ok=True)
         save_dir = os.path.join(tmpdir, 'images')
+        os.makedirs(save_dir, exist_ok=True)
         
         # 取消信号检查
         if cancel_signal_path and os.path.exists(cancel_signal_path):
